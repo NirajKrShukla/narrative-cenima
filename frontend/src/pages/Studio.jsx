@@ -307,6 +307,7 @@ const IngestPanel = ({ project, onDone }) => {
   const [busy, setBusy] = useState(false);
   const [scriptText, setScriptText] = useState("");
   const [url, setUrl] = useState("");
+  const [ingestLang, setIngestLang] = useState(project.language_hint || "auto");
   const fileRef = useRef(null);
   const voiceRef = useRef(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -326,12 +327,12 @@ const IngestPanel = ({ project, onDone }) => {
 
   const submitScript = () => doAction(async () => {
     if (scriptText.trim().length < 30) throw new Error("Please provide at least a few sentences.");
-    await API.post(`/projects/${project.id}/ingest/text`, { text: scriptText });
+    await API.post(`/projects/${project.id}/ingest/text`, { text: scriptText, language: ingestLang });
   });
 
   const submitUrl = () => doAction(async () => {
     if (!url.match(/^https?:\/\//)) throw new Error("Enter a full http(s) URL");
-    await API.post(`/projects/${project.id}/ingest/url`, { url });
+    await API.post(`/projects/${project.id}/ingest/url`, { url, language: ingestLang });
   });
 
   const submitFile = () => doAction(async () => {
@@ -339,6 +340,7 @@ const IngestPanel = ({ project, onDone }) => {
     if (!f) throw new Error("Choose a file first");
     const form = new FormData();
     form.append("file", f);
+    if (ingestLang) form.append("language", ingestLang);
     await API.post(`/projects/${project.id}/ingest/file`, form);
   });
 
@@ -347,6 +349,7 @@ const IngestPanel = ({ project, onDone }) => {
     if (!f) throw new Error("Choose an audio file");
     const form = new FormData();
     form.append("file", f);
+    if (ingestLang) form.append("language", ingestLang);
     await API.post(`/projects/${project.id}/ingest/voice`, form);
   });
 
@@ -401,6 +404,42 @@ const IngestPanel = ({ project, onDone }) => {
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2">
         <Section title="Ingest source" icon={FileText} testid="ingest-section">
+          {/* Universal language picker — applies to any input method */}
+          <div className="mb-6 p-4 rounded-md border border-gold/20 bg-gold/5">
+            <div className="flex items-center gap-2 mb-2">
+              <Globe className="w-3.5 h-3.5 text-gold" />
+              <label className="overline">Narration language · works with ANY input method</label>
+            </div>
+            <select
+              className="input-field"
+              value={ingestLang}
+              onChange={(e) => setIngestLang(e.target.value)}
+              data-testid="ingest-language"
+            >
+              {(() => {
+                const groups = {};
+                LANGUAGES.forEach((l) => {
+                  const g = l.region || "General";
+                  (groups[g] = groups[g] || []).push(l);
+                });
+                const order = ["", "General", "South Asia", "Europe & Global", "Europe", "East Asia", "SE Asia", "Middle East", "Caucasus", "Central Asia", "Asia", "Africa", "Americas", "Pacific"];
+                const keys = Object.keys(groups).sort(
+                  (a, b) => (order.indexOf(a) + 100) - (order.indexOf(b) + 100)
+                );
+                return keys.map((k) => (
+                  <optgroup key={k} label={k || "General"}>
+                    {groups[k].map((l) => (
+                      <option key={l.id} value={l.id}>{l.label}</option>
+                    ))}
+                  </optgroup>
+                ));
+              })()}
+            </select>
+            <div className="text-[11px] text-white/50 mt-2">
+              {LANGUAGES.length - 1}+ world languages supported · translated automatically from any source
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
             {modes.map((m) => (
               <button
@@ -1139,23 +1178,112 @@ const VOICES = [
   { id: "shimmer", desc: "Bright, cheerful" },
 ];
 
+// All spoken languages on Earth (ISO 639-1/2 codes). Covers 100+ languages.
+// TTS (OpenAI) and Claude both accept these; Whisper accepts the 2-letter codes.
 const LANGUAGES = [
-  { id: "auto", label: "Auto-detect (from story)" },
-  { id: "en", label: "English" },
-  { id: "hi", label: "Hindi (हिन्दी)" },
-  { id: "sa", label: "Sanskrit (संस्कृतम्)" },
-  { id: "bn", label: "Bengali (বাংলা)" },
-  { id: "ta", label: "Tamil (தமிழ்)" },
-  { id: "te", label: "Telugu (తెలుగు)" },
-  { id: "mr", label: "Marathi (मराठी)" },
-  { id: "gu", label: "Gujarati (ગુજરાતી)" },
-  { id: "kn", label: "Kannada (ಕನ್ನಡ)" },
-  { id: "ml", label: "Malayalam (മലയാളം)" },
-  { id: "pa", label: "Punjabi (ਪੰਜਾਬੀ)" },
-  { id: "ur", label: "Urdu (اردو)" },
-  { id: "es", label: "Spanish" },
-  { id: "fr", label: "French" },
-  { id: "de", label: "German" },
+  { id: "auto", label: "Auto-detect (from story)", region: "" },
+  // Indian subcontinent
+  { id: "hi", label: "Hindi (हिन्दी)", region: "South Asia" },
+  { id: "bn", label: "Bengali (বাংলা)", region: "South Asia" },
+  { id: "ta", label: "Tamil (தமிழ்)", region: "South Asia" },
+  { id: "te", label: "Telugu (తెలుగు)", region: "South Asia" },
+  { id: "mr", label: "Marathi (मराठी)", region: "South Asia" },
+  { id: "gu", label: "Gujarati (ગુજરાતી)", region: "South Asia" },
+  { id: "kn", label: "Kannada (ಕನ್ನಡ)", region: "South Asia" },
+  { id: "ml", label: "Malayalam (മലയാളം)", region: "South Asia" },
+  { id: "pa", label: "Punjabi (ਪੰਜਾਬੀ)", region: "South Asia" },
+  { id: "ur", label: "Urdu (اردو)", region: "South Asia" },
+  { id: "or", label: "Odia (ଓଡ଼ିଆ)", region: "South Asia" },
+  { id: "as", label: "Assamese (অসমীয়া)", region: "South Asia" },
+  { id: "sa", label: "Sanskrit (संस्कृतम्)", region: "South Asia" },
+  { id: "ne", label: "Nepali (नेपाली)", region: "South Asia" },
+  { id: "si", label: "Sinhala (සිංහල)", region: "South Asia" },
+  { id: "sd", label: "Sindhi (سنڌي)", region: "South Asia" },
+  // European
+  { id: "en", label: "English", region: "Europe & Global" },
+  { id: "es", label: "Spanish (Español)", region: "Europe & Global" },
+  { id: "fr", label: "French (Français)", region: "Europe & Global" },
+  { id: "de", label: "German (Deutsch)", region: "Europe" },
+  { id: "it", label: "Italian (Italiano)", region: "Europe" },
+  { id: "pt", label: "Portuguese (Português)", region: "Europe & Global" },
+  { id: "nl", label: "Dutch (Nederlands)", region: "Europe" },
+  { id: "pl", label: "Polish (Polski)", region: "Europe" },
+  { id: "ru", label: "Russian (Русский)", region: "Europe" },
+  { id: "uk", label: "Ukrainian (Українська)", region: "Europe" },
+  { id: "el", label: "Greek (Ελληνικά)", region: "Europe" },
+  { id: "sv", label: "Swedish (Svenska)", region: "Europe" },
+  { id: "no", label: "Norwegian (Norsk)", region: "Europe" },
+  { id: "da", label: "Danish (Dansk)", region: "Europe" },
+  { id: "fi", label: "Finnish (Suomi)", region: "Europe" },
+  { id: "is", label: "Icelandic (Íslenska)", region: "Europe" },
+  { id: "cs", label: "Czech (Čeština)", region: "Europe" },
+  { id: "sk", label: "Slovak (Slovenčina)", region: "Europe" },
+  { id: "sl", label: "Slovenian (Slovenščina)", region: "Europe" },
+  { id: "hr", label: "Croatian (Hrvatski)", region: "Europe" },
+  { id: "sr", label: "Serbian (Српски)", region: "Europe" },
+  { id: "bs", label: "Bosnian (Bosanski)", region: "Europe" },
+  { id: "mk", label: "Macedonian (Македонски)", region: "Europe" },
+  { id: "bg", label: "Bulgarian (Български)", region: "Europe" },
+  { id: "ro", label: "Romanian (Română)", region: "Europe" },
+  { id: "hu", label: "Hungarian (Magyar)", region: "Europe" },
+  { id: "lt", label: "Lithuanian (Lietuvių)", region: "Europe" },
+  { id: "lv", label: "Latvian (Latviešu)", region: "Europe" },
+  { id: "et", label: "Estonian (Eesti)", region: "Europe" },
+  { id: "sq", label: "Albanian (Shqip)", region: "Europe" },
+  { id: "be", label: "Belarusian (Беларуская)", region: "Europe" },
+  { id: "ca", label: "Catalan (Català)", region: "Europe" },
+  { id: "gl", label: "Galician (Galego)", region: "Europe" },
+  { id: "eu", label: "Basque (Euskara)", region: "Europe" },
+  { id: "cy", label: "Welsh (Cymraeg)", region: "Europe" },
+  { id: "ga", label: "Irish (Gaeilge)", region: "Europe" },
+  { id: "mt", label: "Maltese (Malti)", region: "Europe" },
+  { id: "yi", label: "Yiddish (ייִדיש)", region: "Europe" },
+  { id: "la", label: "Latin (Latinum)", region: "Europe" },
+  // Middle East & Africa
+  { id: "ar", label: "Arabic (العربية)", region: "Middle East" },
+  { id: "he", label: "Hebrew (עברית)", region: "Middle East" },
+  { id: "fa", label: "Persian / Farsi (فارسی)", region: "Middle East" },
+  { id: "tr", label: "Turkish (Türkçe)", region: "Middle East" },
+  { id: "az", label: "Azerbaijani (Azərbaycan)", region: "Caucasus" },
+  { id: "hy", label: "Armenian (Հայերեն)", region: "Caucasus" },
+  { id: "ka", label: "Georgian (ქართული)", region: "Caucasus" },
+  { id: "kk", label: "Kazakh (Қазақ)", region: "Central Asia" },
+  { id: "uz", label: "Uzbek (Oʻzbek)", region: "Central Asia" },
+  { id: "tg", label: "Tajik (Тоҷикӣ)", region: "Central Asia" },
+  { id: "tk", label: "Turkmen (Türkmen)", region: "Central Asia" },
+  { id: "mn", label: "Mongolian (Монгол)", region: "Asia" },
+  { id: "sw", label: "Swahili (Kiswahili)", region: "Africa" },
+  { id: "am", label: "Amharic (አማርኛ)", region: "Africa" },
+  { id: "ha", label: "Hausa", region: "Africa" },
+  { id: "yo", label: "Yoruba", region: "Africa" },
+  { id: "zu", label: "Zulu", region: "Africa" },
+  { id: "af", label: "Afrikaans", region: "Africa" },
+  { id: "so", label: "Somali", region: "Africa" },
+  { id: "sn", label: "Shona (chiShona)", region: "Africa" },
+  { id: "mg", label: "Malagasy", region: "Africa" },
+  { id: "ln", label: "Lingala", region: "Africa" },
+  { id: "ps", label: "Pashto (پښتو)", region: "Central Asia" },
+  { id: "ug", label: "Uyghur (ئۇيغۇرچە)", region: "Central Asia" },
+  // East / South-East Asia
+  { id: "zh", label: "Chinese Mandarin (中文)", region: "East Asia" },
+  { id: "yue", label: "Cantonese (粵語)", region: "East Asia" },
+  { id: "ja", label: "Japanese (日本語)", region: "East Asia" },
+  { id: "ko", label: "Korean (한국어)", region: "East Asia" },
+  { id: "vi", label: "Vietnamese (Tiếng Việt)", region: "SE Asia" },
+  { id: "th", label: "Thai (ไทย)", region: "SE Asia" },
+  { id: "lo", label: "Lao (ລາວ)", region: "SE Asia" },
+  { id: "km", label: "Khmer (ខ្មែរ)", region: "SE Asia" },
+  { id: "my", label: "Burmese (မြန်မာ)", region: "SE Asia" },
+  { id: "id", label: "Indonesian (Bahasa Indonesia)", region: "SE Asia" },
+  { id: "ms", label: "Malay (Bahasa Melayu)", region: "SE Asia" },
+  { id: "tl", label: "Filipino / Tagalog", region: "SE Asia" },
+  { id: "jv", label: "Javanese (Basa Jawa)", region: "SE Asia" },
+  { id: "su", label: "Sundanese (Basa Sunda)", region: "SE Asia" },
+  { id: "bo", label: "Tibetan (བོད་ཡིག)", region: "Asia" },
+  // Americas & Pacific
+  { id: "ht", label: "Haitian Creole (Kreyòl)", region: "Americas" },
+  { id: "haw", label: "Hawaiian (ʻŌlelo Hawaiʻi)", region: "Pacific" },
+  { id: "mi", label: "Māori (Te Reo)", region: "Pacific" },
 ];
 
 const VoiceLanguageSettings = ({ project, onReload }) => {
@@ -1223,12 +1351,28 @@ const VoiceLanguageSettings = ({ project, onReload }) => {
             onChange={(e) => setLanguage(e.target.value)}
             data-testid="settings-language"
           >
-            {LANGUAGES.map((l) => (
-              <option key={l.id} value={l.id}>{l.label}</option>
-            ))}
+            {/* Grouped by region for easier scanning */}
+            {(() => {
+              const groups = {};
+              LANGUAGES.forEach((l) => {
+                const g = l.region || "General";
+                (groups[g] = groups[g] || []).push(l);
+              });
+              const order = ["", "General", "South Asia", "Europe & Global", "Europe", "East Asia", "SE Asia", "Middle East", "Caucasus", "Central Asia", "Asia", "Africa", "Americas", "Pacific"];
+              const keys = Object.keys(groups).sort(
+                (a, b) => (order.indexOf(a) + 100) - (order.indexOf(b) + 100)
+              );
+              return keys.map((k) => (
+                <optgroup key={k} label={k || "General"}>
+                  {groups[k].map((l) => (
+                    <option key={l.id} value={l.id}>{l.label}</option>
+                  ))}
+                </optgroup>
+              ));
+            })()}
           </select>
           <div className="mt-1 text-[11px] text-white/40">
-            Applied to future narrations you generate. Re-run the narration step to hear the new voice.
+            {LANGUAGES.length - 1}+ languages supported. Applied to future narrations you generate.
           </div>
         </div>
         <div className="lg:col-span-2 flex items-end justify-end">

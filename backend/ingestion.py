@@ -9,6 +9,48 @@ from pypdf import PdfReader
 from docx import Document
 
 
+# ---- ISO 639-1 mapping for the world's most-spoken languages ----
+# Whisper accepts these 2-letter codes; we accept full names and route to code.
+_ISO_MAP = {
+    "afrikaans": "af", "albanian": "sq", "amharic": "am", "arabic": "ar", "armenian": "hy",
+    "assamese": "as", "azerbaijani": "az", "bashkir": "ba", "basque": "eu", "belarusian": "be",
+    "bengali": "bn", "bosnian": "bs", "breton": "br", "bulgarian": "bg", "burmese": "my",
+    "cantonese": "yue", "catalan": "ca", "chinese": "zh", "mandarin": "zh", "croatian": "hr",
+    "czech": "cs", "danish": "da", "dutch": "nl", "english": "en", "estonian": "et",
+    "faroese": "fo", "finnish": "fi", "french": "fr", "galician": "gl", "georgian": "ka",
+    "german": "de", "greek": "el", "gujarati": "gu", "haitian": "ht", "hausa": "ha",
+    "hawaiian": "haw", "hebrew": "he", "hindi": "hi", "hungarian": "hu", "icelandic": "is",
+    "indonesian": "id", "italian": "it", "japanese": "ja", "javanese": "jv", "kannada": "kn",
+    "kazakh": "kk", "khmer": "km", "korean": "ko", "lao": "lo", "latin": "la", "latvian": "lv",
+    "lingala": "ln", "lithuanian": "lt", "luxembourgish": "lb", "macedonian": "mk",
+    "malagasy": "mg", "malay": "ms", "malayalam": "ml", "maltese": "mt", "maori": "mi",
+    "marathi": "mr", "mongolian": "mn", "nepali": "ne", "norwegian": "no", "nynorsk": "nn",
+    "occitan": "oc", "odia": "or", "oriya": "or", "pashto": "ps", "persian": "fa", "farsi": "fa",
+    "polish": "pl", "portuguese": "pt", "punjabi": "pa", "romanian": "ro", "russian": "ru",
+    "sanskrit": "sa", "serbian": "sr", "shona": "sn", "sindhi": "sd", "sinhala": "si",
+    "sinhalese": "si", "slovak": "sk", "slovenian": "sl", "somali": "so", "spanish": "es",
+    "sundanese": "su", "swahili": "sw", "swedish": "sv", "tagalog": "tl", "filipino": "tl",
+    "tajik": "tg", "tamil": "ta", "tatar": "tt", "telugu": "te", "thai": "th",
+    "tibetan": "bo", "turkish": "tr", "turkmen": "tk", "ukrainian": "uk", "urdu": "ur",
+    "uyghur": "ug", "uzbek": "uz", "vietnamese": "vi", "welsh": "cy", "yiddish": "yi",
+    "yoruba": "yo", "zulu": "zu",
+}
+
+
+def iso_code_for_language(name_or_code: str | None) -> str | None:
+    """Return the ISO 639-1 code Whisper expects. Accepts full names or 2-letter codes.
+    Returns None for auto/blank so Whisper auto-detects."""
+    if not name_or_code:
+        return None
+    v = name_or_code.strip().lower()
+    if v in ("", "auto", "any", "detect"):
+        return None
+    # Direct ISO code (2-3 letters)
+    if len(v) <= 3 and v.isalpha():
+        return v
+    return _ISO_MAP.get(v)
+
+
 async def extract_from_url(url: str) -> str:
     async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
         r = await client.get(url, headers={"User-Agent": "AiPilluStudio/1.0 (Story-to-Film AI Agent; +https://aipillu.example) requests"})

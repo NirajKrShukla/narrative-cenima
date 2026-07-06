@@ -156,8 +156,8 @@ export default function Landing() {
               <span className="text-gold"> half-written idea</span> — AiPillu reads them all.
             </h3>
             <p className="mt-5 text-white/60 max-w-xl">
-              Give it the raw material; get back a scene-by-scene short film with narration in the story&apos;s own language.
-              Hindi, Sanskrit, Tamil, English — the narrator speaks it back.
+              Give it the raw material; get back a scene-by-scene short film with narration in <span className="text-gold">100+ world languages</span>.
+              Hindi, Sanskrit, Tamil, Arabic, Mandarin, Swahili, Spanish, English — the narrator speaks any of them.
             </p>
           </div>
         </div>

@@ -70,3 +70,13 @@ Add a **"Public Gallery"** page where paid films (with user consent) are showcas
 
 ## Test Credentials
 Anonymous (no login). `EMERGENT_LLM_KEY` and `STRIPE_API_KEY=sk_test_emergent` are in `/app/backend/.env`.
+
+## Update (2026-07-06 · 100+ languages)
+- Frontend **LANGUAGES** list expanded from 16 → **97+ world languages** (all continents), grouped by region
+- Narration language picker now appears **at the top of the Ingest panel** — applies to Paste-Script, Upload-File, From-URL, Voice/Audio inputs
+- Backend accepts arbitrary language strings (full name like "Swahili"/"Zulu" or ISO code "sw"/"zu")
+- Ingestion endpoints (`/ingest/text|url|file|voice`) all accept `language` and persist it to `project.language_hint`
+- `/ingest/voice` maps full-name → ISO 639-1 code for Whisper (`ingestion.iso_code_for_language`)
+- Analyze prompt to Claude now issues an explicit `LANGUAGE OVERRIDE` instruction with native-script guidance
+- OpenAI TTS voices are multi-lingual by design — same voice speaks any language driven by the narration text
+- Landing page copy updated to advertise 100+ world languages

@@ -76,16 +76,39 @@ Aim for 4-8 scenes for a short film. Keep character count 2-5.
 
 
 async def analyze_story(text: str, language_hint: str = "auto") -> dict:
-    """Use Claude Sonnet 4.6 to break the story into scenes and characters (JSON)."""
+    """Use Claude Sonnet 4.6 to break the story into scenes and characters (JSON).
+
+    language_hint:
+      - "auto" — detect from source text
+      - any language name or ISO code (e.g. "hi", "Hindi", "es", "Spanish", "Swahili")
+    """
     chat = LlmChat(
         api_key=_api_key(),
         session_id=f"story-{uuid.uuid4().hex[:8]}",
         system_message=STORY_SYSTEM_PROMPT,
     ).with_model("anthropic", "claude-sonnet-4-6")
 
+    lang_instruction = ""
+    lh = (language_hint or "auto").strip()
+    if lh and lh.lower() not in ("auto", ""):
+        lang_instruction = (
+            f"\n\nLANGUAGE OVERRIDE: The narrator's voice-over lines (field `narration` on every scene) "
+            f"MUST be written in **{lh}** — even if the source text is in a different language. "
+            f"Use the native script of that language (e.g. Devanagari for Hindi, Arabic for Arabic, "
+            f"Cyrillic for Russian, Chinese characters for Mandarin/Cantonese). "
+            f"Keep every other JSON field in English so the pipeline can consume it consistently."
+        )
+    else:
+        lang_instruction = (
+            "\n\nLANGUAGE: Auto-detect the source language and write the narrator's voice-over "
+            "(field `narration` on every scene) in that same language using its native script. "
+            "Keep every other JSON field in English."
+        )
+
     user_prompt = f"""Transform the following source into the JSON blueprint described in your system prompt.
-If the source is in a non-English language (e.g. Hindi, Sanskrit, Tamil), keep the NARRATION in that same language
-but keep all other JSON keys and helper fields in English. Return JSON only.
+{lang_instruction}
+
+Return JSON only.
 
 SOURCE:
 '''

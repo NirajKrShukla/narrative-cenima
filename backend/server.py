@@ -49,14 +49,16 @@ class ProjectCreate(BaseModel):
 
 class UrlIngest(BaseModel):
     url: str
+    language: Optional[str] = None
 
 
 class TextIngest(BaseModel):
     text: str
+    language: Optional[str] = None
 
 
 class AnalyzeRequest(BaseModel):
-    language_hint: Optional[str] = "auto"
+    language_hint: Optional[str] = None
 
 
 class GenerateVideoRequest(BaseModel):
@@ -187,19 +189,19 @@ async def delete_project(pid: str):
     return {"deleted": True}
 
 
-async def _update_source(pid: str, text: str, source_type: str, meta: dict | None = None):
+async def _update_source(pid: str, text: str, source_type: str, meta: dict | None = None, language: str | None = None):
     if not text or len(text.strip()) < 30:
         raise HTTPException(400, "Extracted text is too short — please provide a richer source.")
-    await projects_col.update_one(
-        {"id": pid},
-        {"$set": {
-            "source_text": text[:40000],
-            "source_type": source_type,
-            "source_meta": meta or {},
-            "status": "ingested",
-            "updated_at": now_iso(),
-        }},
-    )
+    update = {
+        "source_text": text[:40000],
+        "source_type": source_type,
+        "source_meta": meta or {},
+        "status": "ingested",
+        "updated_at": now_iso(),
+    }
+    if language:
+        update["language_hint"] = language.strip()[:60]
+    await projects_col.update_one({"id": pid}, {"$set": update})
 
 
 @api.post("/projects/{pid}/ingest/text")
@@ -207,7 +209,7 @@ async def ingest_text(pid: str, body: TextIngest):
     doc = await projects_col.find_one({"id": pid})
     if not doc:
         raise HTTPException(404, "Project not found")
-    await _update_source(pid, body.text, "text")
+    await _update_source(pid, body.text, "text", language=body.language)
     return {"ok": True, "chars": len(body.text)}
 
 
@@ -220,12 +222,12 @@ async def ingest_url(pid: str, body: UrlIngest):
         text = await ingestion.extract_from_url(body.url)
     except Exception as e:
         raise HTTPException(400, f"Failed to fetch URL: {e}")
-    await _update_source(pid, text, "url", {"url": body.url})
+    await _update_source(pid, text, "url", {"url": body.url}, language=body.language)
     return {"ok": True, "chars": len(text)}
 
 
 @api.post("/projects/{pid}/ingest/file")
-async def ingest_file(pid: str, file: UploadFile = File(...)):
+async def ingest_file(pid: str, file: UploadFile = File(...), language: Optional[str] = Form(None)):
     doc = await projects_col.find_one({"id": pid})
     if not doc:
         raise HTTPException(404, "Project not found")
@@ -236,7 +238,7 @@ async def ingest_file(pid: str, file: UploadFile = File(...)):
         text = await ingestion.extract_from_upload(file.filename or "", data)
     except Exception as e:
         raise HTTPException(400, f"Could not parse file: {e}")
-    await _update_source(pid, text, "file", {"filename": file.filename})
+    await _update_source(pid, text, "file", {"filename": file.filename}, language=language)
     return {"ok": True, "chars": len(text), "filename": file.filename}
 
 
@@ -247,8 +249,10 @@ async def ingest_voice(pid: str, file: UploadFile = File(...), language: Optiona
         raise HTTPException(404, "Project not found")
     tmp = STORAGE_DIR / f"voice_{pid}_{uuid.uuid4().hex[:6]}_{file.filename}"
     tmp.write_bytes(await file.read())
+    # Whisper accepts 2-letter ISO 639-1 codes only. Extract from any full name -> code map.
+    whisper_lang = ingestion.iso_code_for_language(language) if language else None
     try:
-        text = await ingestion.transcribe_audio(str(tmp), language=language)
+        text = await ingestion.transcribe_audio(str(tmp), language=whisper_lang)
     except Exception as e:
         raise HTTPException(400, f"Transcription failed: {e}")
     finally:
@@ -256,7 +260,7 @@ async def ingest_voice(pid: str, file: UploadFile = File(...), language: Optiona
             tmp.unlink()
         except Exception:
             pass
-    await _update_source(pid, text, "voice", {"filename": file.filename, "language": language})
+    await _update_source(pid, text, "voice", {"filename": file.filename, "language": language}, language=language)
     return {"ok": True, "chars": len(text), "transcript": text[:500]}
 
 
@@ -311,8 +315,10 @@ async def analyze(pid: str, body: AnalyzeRequest = AnalyzeRequest()):
         return {"ok": True, "status": "analyzing", "already_running": True}
 
     await projects_col.update_one({"id": pid}, {"$set": {"status": "analyzing", "last_error": None}})
-    asyncio.create_task(_analyze_task(pid, doc["source_text"], body.language_hint or "auto"))
-    return {"ok": True, "status": "analyzing"}
+    # Priority: request body > project setting > auto
+    lang = body.language_hint or doc.get("language_hint") or "auto"
+    asyncio.create_task(_analyze_task(pid, doc["source_text"], lang))
+    return {"ok": True, "status": "analyzing", "language_hint": lang}
 
 
 @api.post("/projects/{pid}/characters/{cid}/image")
@@ -516,7 +522,8 @@ async def update_settings(pid: str, body: ProjectSettings):
             raise HTTPException(400, "voice_model must be tts-1 or tts-1-hd")
         updates["voice_model"] = body.voice_model
     if body.language_hint is not None:
-        updates["language_hint"] = body.language_hint
+        # Accept any language name or ISO code — TTS and Claude both understand them.
+        updates["language_hint"] = body.language_hint.strip()[:60] or "auto"
     if body.title is not None:
         updates["title"] = body.title.strip()[:120] or "Untitled Film"
     if not updates:
