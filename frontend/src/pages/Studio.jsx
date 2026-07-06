@@ -12,10 +12,10 @@ import { API, assetUrl } from "../lib/api";
 
 // --------- Anonymous user id (localStorage) ----------
 const getUserId = () => {
-  let uid = localStorage.getItem("kavya_uid");
+  let uid = localStorage.getItem("aipillu_uid");
   if (!uid) {
     uid = "u_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-    localStorage.setItem("kavya_uid", uid);
+    localStorage.setItem("aipillu_uid", uid);
   }
   return uid;
 };
@@ -113,7 +113,7 @@ export default function Studio() {
             <div className="flex items-center gap-2">
               <Film className="w-5 h-5 text-gold" />
               <span className="font-display text-lg tracking-tight">
-                Kavya <span className="text-gold">Studio</span>
+                AiPillu <span className="text-gold">Studio</span>
               </span>
             </div>
           </div>
@@ -205,7 +205,7 @@ const EmptyState = ({ onCreate }) => (
     </div>
     <h2 className="font-display text-3xl tracking-tight">Start a new film</h2>
     <p className="text-white/60 mt-3 max-w-md mx-auto text-sm">
-      Ingest a story via file, URL, script or voice — Kavya will do the rest.
+      Ingest a story via file, URL, script or voice — AiPillu will do the rest.
     </p>
     <button className="btn-gold mt-8" onClick={onCreate} data-testid="empty-create-btn">
       <Plus className="w-4 h-4" /> Create project
@@ -329,11 +329,38 @@ const IngestPanel = ({ project, onDone }) => {
     setAnalyzing(true);
     try {
       await API.post(`/projects/${project.id}/analyze`);
-      toast.success("Story analyzed — characters and scenes ready");
-      await onDone();
+      toast.success("Analysis started — this can take 1–3 minutes");
+      // Poll project until status becomes 'analyzed' or 'error'
+      let attempts = 0;
+      const poll = async () => {
+        attempts += 1;
+        try {
+          const { data } = await API.get(`/projects/${project.id}`);
+          if (data.status === "analyzed") {
+            toast.success("Story analyzed — characters and scenes ready");
+            setAnalyzing(false);
+            await onDone();
+            return;
+          }
+          if (data.status === "error") {
+            toast.error(data.last_error || "Analysis failed");
+            setAnalyzing(false);
+            return;
+          }
+          if (attempts > 90) {
+            toast.error("Analysis timed out. Please try again.");
+            setAnalyzing(false);
+            return;
+          }
+          setTimeout(poll, 3000);
+        } catch (err) {
+          setAnalyzing(false);
+          toast.error("Status poll failed");
+        }
+      };
+      setTimeout(poll, 3000);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Analysis failed");
-    } finally {
       setAnalyzing(false);
     }
   };
@@ -853,7 +880,7 @@ const UnlockAndShare = ({ project, unlock, unlocked, loading, payBusy, polling, 
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const shareText = `Watch "${project.title}" — an original AI-crafted short film made with Kavya Studio`;
+  const shareText = `Watch "${project.title}" — an original AI-crafted short film made with AiPillu Studio`;
   const enc = encodeURIComponent;
   const encUrl = enc(shareUrl || "");
   const encText = enc(shareText);

@@ -49,7 +49,8 @@ def compute_price_inr(project: dict) -> float:
     quality_fee = 5.0 * sora_scenes
     subtotal = base + size_fee + quality_fee
     total = math.ceil(subtotal * 1.10)  # 10% creator margin
-    total = max(total, 19)  # Stripe minimum around ~₹18 for INR — use 19 INR floor
+    # Stripe INR minimum is roughly $0.50 USD (~₹45). Floor at ₹49 to keep checkout valid.
+    total = max(total, 49)
     return float(total)
 
 
@@ -61,7 +62,7 @@ def compute_price_breakdown(project: dict) -> dict:
     over_mb = max(0.0, mb - 20.0)
     subtotal = 10.0 + 2.0 * over_mb + 5.0 * sora_scenes
     total = math.ceil(subtotal * 1.10)
-    total = max(total, 19)
+    total = max(total, 49)
     return {
         "size_mb": mb,
         "over_free_mb": round(over_mb, 2),

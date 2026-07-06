@@ -32,7 +32,7 @@ export default function Landing() {
           <Link to="/" className="flex items-center gap-2 group" data-testid="nav-logo">
             <Film className="w-5 h-5 text-gold group-hover:rotate-12 transition-transform" />
             <span className="font-display text-lg tracking-tight">
-              Kavya <span className="text-gold">Studio</span>
+              AiPillu <span className="text-gold">Studio</span>
             </span>
           </Link>
           <div className="hidden md:flex items-center gap-8 text-sm text-white/70">
@@ -72,7 +72,7 @@ export default function Landing() {
             </motion.h1>
             <motion.p variants={item} className="mt-8 max-w-2xl text-lg text-white/70 leading-relaxed">
               Drop a PDF, paste a script, share a URL, or narrate aloud —
-              Kavya turns it into a cinematic short with original characters,
+              AiPillu turns it into a cinematic short with original characters,
               scene-by-scene direction, voice narration and a downloadable film.
             </motion.p>
             <motion.div variants={item} className="mt-10 flex flex-wrap gap-4">
@@ -152,7 +152,7 @@ export default function Landing() {
             <div className="overline">Any source</div>
             <h3 className="font-display text-3xl sm:text-4xl mt-3 leading-tight">
               Ramayan, Mahabharat, your grandmother&apos;s tale, or a
-              <span className="text-gold"> half-written idea</span> — Kavya reads them all.
+              <span className="text-gold"> half-written idea</span> — AiPillu reads them all.
             </h3>
             <p className="mt-5 text-white/60 max-w-xl">
               Give it the raw material; get back a scene-by-scene short film with narration in the story&apos;s own language.
@@ -176,7 +176,7 @@ export default function Landing() {
                   Original characters, original visuals, always.
                 </h4>
                 <p className="text-white/60 mt-4 max-w-2xl leading-relaxed">
-                  Kavya&apos;s director model rewrites well-known figures into inspired-but-original creations —
+                  AiPillu&apos;s director model rewrites well-known figures into inspired-but-original creations —
                   new names, new attire, new silhouettes — so nothing you generate steps on protected IP.
                   No living celebrities. No franchise designs. No hidden logos.
                 </p>
@@ -204,7 +204,7 @@ export default function Landing() {
       </section>
 
       <footer className="border-t border-white/5 py-8 text-center text-xs text-white/40">
-        Kavya Studio · Story-to-Film AI Agent
+        AiPillu Studio · Story-to-Film AI Agent
       </footer>
     </div>
   );

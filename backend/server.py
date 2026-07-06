@@ -223,25 +223,19 @@ async def ingest_voice(pid: str, file: UploadFile = File(...), language: Optiona
     return {"ok": True, "chars": len(text), "transcript": text[:500]}
 
 
-@api.post("/projects/{pid}/analyze")
-async def analyze(pid: str, body: AnalyzeRequest = AnalyzeRequest()):
-    doc = await projects_col.find_one({"id": pid})
-    if not doc:
-        raise HTTPException(404, "Project not found")
-    if not doc.get("source_text"):
-        raise HTTPException(400, "No source text ingested yet")
-
-    await projects_col.update_one({"id": pid}, {"$set": {"status": "analyzing"}})
+async def _analyze_task(pid: str, source_text: str, language_hint: str):
     try:
-        blueprint = await ai_services.analyze_story(doc["source_text"], body.language_hint or "auto")
+        blueprint = await ai_services.analyze_story(source_text, language_hint or "auto")
     except Exception as e:
-        await projects_col.update_one({"id": pid}, {"$set": {"status": "error", "last_error": str(e)}})
-        raise HTTPException(500, f"Story analysis failed: {e}")
+        logger.error(f"Analyze failed for {pid}: {e}")
+        await projects_col.update_one(
+            {"id": pid},
+            {"$set": {"status": "error", "last_error": str(e)[:400], "updated_at": now_iso()}},
+        )
+        return
 
     characters = blueprint.get("characters") or []
     scenes = blueprint.get("scenes") or []
-
-    # Ensure ids exist
     for i, c in enumerate(characters):
         c["id"] = c.get("id") or f"char_{i+1}"
         c["image_file"] = None
@@ -256,14 +250,32 @@ async def analyze(pid: str, body: AnalyzeRequest = AnalyzeRequest()):
         {"id": pid},
         {"$set": {
             "blueprint": blueprint,
-            "title": blueprint.get("title") or doc["title"],
+            "title": blueprint.get("title") or "Untitled Film",
             "characters": characters,
             "scenes": scenes,
             "status": "analyzed",
+            "last_error": None,
             "updated_at": now_iso(),
         }},
     )
-    return await get_project(pid)
+
+
+@api.post("/projects/{pid}/analyze")
+async def analyze(pid: str, body: AnalyzeRequest = AnalyzeRequest()):
+    """Kick off analysis as a background task and return immediately.
+    Frontend polls GET /projects/{pid} until status == 'analyzed' or 'error'.
+    This avoids Cloudflare's ~100s idle-timeout on long Claude calls."""
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    if not doc.get("source_text"):
+        raise HTTPException(400, "No source text ingested yet")
+    if doc.get("status") == "analyzing":
+        return {"ok": True, "status": "analyzing", "already_running": True}
+
+    await projects_col.update_one({"id": pid}, {"$set": {"status": "analyzing", "last_error": None}})
+    asyncio.create_task(_analyze_task(pid, doc["source_text"], body.language_hint or "auto"))
+    return {"ok": True, "status": "analyzing"}
 
 
 @api.post("/projects/{pid}/characters/{cid}/image")
@@ -698,7 +710,7 @@ async def download_film(pid: str, user_id: str = ""):
     path = STORAGE_DIR / final_film
     if not path.exists():
         raise HTTPException(404, "Film file missing on disk")
-    safe_title = (doc.get("title") or "kavya-film").replace("/", "-")[:60]
+    safe_title = (doc.get("title") or "aipillu-film").replace("/", "-")[:60]
     return FileResponse(str(path), media_type="video/mp4", filename=f"{safe_title}.mp4")
 
 
@@ -718,7 +730,7 @@ async def share_info(pid: str, origin_url: str = ""):
     return {
         "share_url": file_url,
         "title": doc.get("title") or "My AI Film",
-        "logline": (doc.get("blueprint") or {}).get("logline") or "Made with Kavya Studio",
+        "logline": (doc.get("blueprint") or {}).get("logline") or "Made with AiPillu Studio",
     }
 
 

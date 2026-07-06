@@ -11,7 +11,7 @@ from docx import Document
 
 async def extract_from_url(url: str) -> str:
     async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
-        r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 StoryFilmAgent"})
+        r = await client.get(url, headers={"User-Agent": "AiPilluStudio/1.0 (Story-to-Film AI Agent; +https://aipillu.example) requests"})
         r.raise_for_status()
         html = r.text
     soup = BeautifulSoup(html, "lxml")
