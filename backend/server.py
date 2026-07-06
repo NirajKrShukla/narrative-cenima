@@ -66,8 +66,34 @@ class GenerateVideoRequest(BaseModel):
 
 
 class GenerateNarrationRequest(BaseModel):
-    voice: str = "onyx"
-    model: str = "tts-1"
+    voice: Optional[str] = None
+    model: Optional[str] = None
+
+
+class ProjectSettings(BaseModel):
+    voice: Optional[str] = None
+    voice_model: Optional[str] = None
+    language_hint: Optional[str] = None
+    title: Optional[str] = None
+
+
+class BatchRequest(BaseModel):
+    mode: str = "all"          # "images" | "narration" | "kenburns" | "sora" | "all"
+    video_type: str = "kenburns"  # used when mode=="all" or "videos" — "kenburns" or "sora"
+    duration: int = 4
+    size: str = "1280x720"
+
+
+class PublishRequest(BaseModel):
+    is_public: bool = True
+    tip_vpa: Optional[str] = None
+
+
+class TipRequest(BaseModel):
+    amount_inr: float
+    origin_url: str
+    user_id: str
+    message: Optional[str] = None
 
 
 class CheckoutRequest(BaseModel):
@@ -112,6 +138,17 @@ async def create_project(body: ProjectCreate):
         "free_granted": False,
         "unlocked_at": None,
         "price_inr": None,
+        # Voice / language settings (project-level defaults)
+        "voice": "onyx",
+        "voice_model": "tts-1",
+        "language_hint": "auto",
+        # Batch job state (for progress UI)
+        "batch": None,   # {job_id, mode, total, completed, current, running, started_at, finished_at, errors:[]}
+        # Public gallery
+        "is_public": False,
+        "tip_vpa": None,      # optional display-only UPI VPA
+        "views": 0,
+        "tips_total_inr": 0.0,
     }
     await projects_col.insert_one(doc)
     return project_public(doc)
@@ -395,8 +432,10 @@ async def gen_scene_narration(pid: str, sid: str, body: GenerateNarrationRequest
         raise HTTPException(404, "Scene not found")
     text = scene.get("narration") or scene.get("description") or ""
     fname = f"{pid}_scene_{sid}.mp3"
+    voice = body.voice or doc.get("voice") or "onyx"
+    model = body.model or doc.get("voice_model") or "tts-1"
     try:
-        await ai_services.generate_narration(text, fname, voice=body.voice, model=body.model)
+        await ai_services.generate_narration(text, fname, voice=voice, model=model)
     except Exception as e:
         raise HTTPException(500, f"TTS failed: {e}")
     await projects_col.update_one(
@@ -456,6 +495,387 @@ async def assemble_film(pid: str):
         {"$set": {"final_film": fname, "status": "assembled", "updated_at": now_iso()}},
     )
     return {"ok": True, "final_film": fname}
+
+
+# ----------------------------------------------------------------------------
+# Project settings (voice, language, title)
+# ----------------------------------------------------------------------------
+@api.patch("/projects/{pid}/settings")
+async def update_settings(pid: str, body: ProjectSettings):
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    updates = {}
+    if body.voice is not None:
+        allowed = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
+        if body.voice not in allowed:
+            raise HTTPException(400, f"Voice must be one of {sorted(allowed)}")
+        updates["voice"] = body.voice
+    if body.voice_model is not None:
+        if body.voice_model not in {"tts-1", "tts-1-hd"}:
+            raise HTTPException(400, "voice_model must be tts-1 or tts-1-hd")
+        updates["voice_model"] = body.voice_model
+    if body.language_hint is not None:
+        updates["language_hint"] = body.language_hint
+    if body.title is not None:
+        updates["title"] = body.title.strip()[:120] or "Untitled Film"
+    if not updates:
+        return {"ok": True, "updated": {}}
+    updates["updated_at"] = now_iso()
+    await projects_col.update_one({"id": pid}, {"$set": updates})
+    return {"ok": True, "updated": updates}
+
+
+# ----------------------------------------------------------------------------
+# Batch generation with progress
+# ----------------------------------------------------------------------------
+
+async def _bump_batch(pid: str, **kv):
+    """Update project.batch fields, keeping the same job."""
+    updates = {f"batch.{k}": v for k, v in kv.items()}
+    updates["updated_at"] = now_iso()
+    await projects_col.update_one({"id": pid}, {"$set": updates})
+
+
+async def _batch_worker(pid: str, mode: str, video_type: str, duration: int, size: str):
+    """Background worker that processes scenes sequentially, updating progress."""
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        return
+    scenes = doc.get("scenes") or []
+
+    # Determine steps per scene
+    steps = []
+    if mode in ("all", "images"):
+        steps.append("image")
+    if mode in ("all", "narration"):
+        steps.append("narration")
+    if mode in ("all", "sora", "kenburns"):
+        steps.append("video")
+    if mode == "all":
+        steps.append("mux")
+
+    total = len(scenes) * len(steps)
+    completed = 0
+    errors: list[str] = []
+
+    await _bump_batch(pid, total=total, completed=0, current="starting", running=True, errors=[])
+
+    for scene in scenes:
+        sid = scene.get("id")
+        for step in steps:
+            await _bump_batch(pid, current=f"{sid}:{step}")
+            try:
+                if step == "image":
+                    visual_style = (doc.get("blueprint") or {}).get("visual_style") or "cinematic film still"
+                    prompt = f"{scene.get('image_prompt') or scene.get('description')}. Style: {visual_style}. No watermark, no text."
+                    fname = f"{pid}_scene_{sid}.png"
+                    await ai_services.generate_image(prompt, fname)
+                    await projects_col.update_one(
+                        {"id": pid, "scenes.id": sid},
+                        {"$set": {"scenes.$.image_file": fname}},
+                    )
+                elif step == "narration":
+                    text = scene.get("narration") or scene.get("description") or ""
+                    fname = f"{pid}_scene_{sid}.mp3"
+                    voice = doc.get("voice") or "onyx"
+                    v_model = doc.get("voice_model") or "tts-1"
+                    await ai_services.generate_narration(text, fname, voice=voice, model=v_model)
+                    await projects_col.update_one(
+                        {"id": pid, "scenes.id": sid},
+                        {"$set": {"scenes.$.audio_file": fname}},
+                    )
+                elif step == "video":
+                    # Refresh scene to get image_file if updated
+                    fresh = await projects_col.find_one({"id": pid, "scenes.id": sid}, {"scenes.$": 1})
+                    fresh_scene = (fresh.get("scenes") or [scene])[0] if fresh else scene
+                    fname_v = f"{pid}_scene_{sid}.mp4"
+                    kb_source = video_type if mode not in ("sora", "kenburns") else mode
+                    if kb_source == "sora":
+                        visual_style = (doc.get("blueprint") or {}).get("visual_style") or "cinematic 35mm"
+                        prompt = f"{scene.get('video_prompt') or scene.get('description')}. Cinematic style: {visual_style}."
+                        await asyncio.to_thread(
+                            ai_services.generate_video_sync,
+                            prompt, fname_v, size, duration, "sora-2",
+                        )
+                    else:
+                        # Ken-Burns needs an image
+                        if not fresh_scene.get("image_file"):
+                            raise RuntimeError("Image required for Ken-Burns (run 'images' first)")
+                        fname_v = f"{pid}_scene_{sid}_kb.mp4"
+                        await asyncio.to_thread(
+                            assembly.image_to_video, fresh_scene["image_file"], fname_v, 6, "1280x720",
+                        )
+                    await projects_col.update_one(
+                        {"id": pid, "scenes.id": sid},
+                        {"$set": {"scenes.$.video_file": fname_v}},
+                    )
+                elif step == "mux":
+                    fresh = await projects_col.find_one({"id": pid, "scenes.id": sid}, {"scenes.$": 1})
+                    fresh_scene = (fresh.get("scenes") or [scene])[0] if fresh else scene
+                    if fresh_scene.get("video_file"):
+                        fname_f = f"{pid}_scene_{sid}_final.mp4"
+                        await asyncio.to_thread(
+                            assembly.mux_scene,
+                            fresh_scene["video_file"], fresh_scene.get("audio_file"), fname_f, fresh_scene.get("narration"),
+                        )
+                        await projects_col.update_one(
+                            {"id": pid, "scenes.id": sid},
+                            {"$set": {"scenes.$.final_file": fname_f}},
+                        )
+            except Exception as e:
+                errors.append(f"{sid}:{step}: {str(e)[:200]}")
+                logger.error(f"Batch error {sid}:{step} — {e}")
+            completed += 1
+            await _bump_batch(pid, completed=completed, errors=errors)
+
+    # If mode==all, auto-assemble
+    if mode == "all":
+        try:
+            await _bump_batch(pid, current="assembling")
+            fresh = await projects_col.find_one({"id": pid})
+            scenes_final = fresh.get("scenes") or []
+            ordered = [s.get("final_file") or s.get("video_file") for s in scenes_final if s.get("final_file") or s.get("video_file")]
+            if ordered:
+                fname_final = f"{pid}_final_film.mp4"
+                await asyncio.to_thread(assembly.concat_scenes, ordered, fname_final)
+                await projects_col.update_one(
+                    {"id": pid},
+                    {"$set": {"final_film": fname_final, "status": "assembled"}},
+                )
+        except Exception as e:
+            errors.append(f"assemble: {str(e)[:200]}")
+
+    await _bump_batch(
+        pid,
+        running=False,
+        current="done",
+        finished_at=now_iso(),
+        errors=errors,
+    )
+
+
+@api.post("/projects/{pid}/batch")
+async def start_batch(pid: str, body: BatchRequest):
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    if not (doc.get("scenes") or []):
+        raise HTTPException(400, "Analyze the story first to produce scenes")
+    if (doc.get("batch") or {}).get("running"):
+        return {"ok": True, "already_running": True}
+    if body.mode not in ("all", "images", "narration", "sora", "kenburns"):
+        raise HTTPException(400, "mode must be one of: all, images, narration, sora, kenburns")
+    if body.video_type not in ("kenburns", "sora"):
+        raise HTTPException(400, "video_type must be kenburns or sora")
+
+    job_id = uuid.uuid4().hex[:10]
+    await projects_col.update_one(
+        {"id": pid},
+        {"$set": {"batch": {
+            "job_id": job_id,
+            "mode": body.mode,
+            "video_type": body.video_type,
+            "duration": body.duration,
+            "size": body.size,
+            "total": 0,
+            "completed": 0,
+            "current": "queued",
+            "running": True,
+            "started_at": now_iso(),
+            "finished_at": None,
+            "errors": [],
+        }}},
+    )
+    asyncio.create_task(_batch_worker(pid, body.mode, body.video_type, body.duration, body.size))
+    return {"ok": True, "job_id": job_id}
+
+
+@api.get("/projects/{pid}/batch")
+async def get_batch(pid: str):
+    doc = await projects_col.find_one({"id": pid}, {"_id": 0, "batch": 1})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    return doc.get("batch") or {"running": False}
+
+
+# ----------------------------------------------------------------------------
+# Public gallery + Tips
+# ----------------------------------------------------------------------------
+
+@api.post("/projects/{pid}/publish")
+async def publish_project(pid: str, body: PublishRequest):
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    if body.is_public and not (doc.get("paid") or doc.get("free_granted")):
+        raise HTTPException(402, "Unlock the film before making it public")
+    if body.is_public and not doc.get("final_film"):
+        raise HTTPException(400, "Assemble the film first")
+    updates = {
+        "is_public": bool(body.is_public),
+        "tip_vpa": (body.tip_vpa or "").strip()[:64] or None,
+        "updated_at": now_iso(),
+    }
+    if body.is_public:
+        updates["published_at"] = now_iso()
+    await projects_col.update_one({"id": pid}, {"$set": updates})
+    return {"ok": True, "is_public": updates["is_public"]}
+
+
+@api.get("/gallery")
+async def gallery(limit: int = 30):
+    limit = max(1, min(60, limit))
+    cursor = projects_col.find(
+        {"is_public": True, "final_film": {"$ne": None}},
+        {"_id": 0}
+    ).sort("published_at", -1).limit(limit)
+    items = []
+    async for d in cursor:
+        items.append({
+            "id": d["id"],
+            "title": d.get("title") or "Untitled",
+            "logline": (d.get("blueprint") or {}).get("logline") or "",
+            "genre": (d.get("blueprint") or {}).get("genre") or "",
+            "tone": (d.get("blueprint") or {}).get("tone") or "",
+            "scene_count": len(d.get("scenes") or []),
+            "views": d.get("views") or 0,
+            "tips_total_inr": d.get("tips_total_inr") or 0,
+            "tip_vpa": d.get("tip_vpa"),
+            "poster_scene_image": next(
+                (s.get("image_file") for s in (d.get("scenes") or []) if s.get("image_file")),
+                None,
+            ),
+            "published_at": d.get("published_at"),
+        })
+    return items
+
+
+@api.get("/gallery/{pid}")
+async def gallery_item(pid: str):
+    doc = await projects_col.find_one({"id": pid, "is_public": True}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Film not found or not public")
+    # Increment views (fire and forget)
+    await projects_col.update_one({"id": pid}, {"$inc": {"views": 1}})
+    return {
+        "id": doc["id"],
+        "title": doc.get("title"),
+        "logline": (doc.get("blueprint") or {}).get("logline") or "",
+        "genre": (doc.get("blueprint") or {}).get("genre") or "",
+        "tone": (doc.get("blueprint") or {}).get("tone") or "",
+        "tip_vpa": doc.get("tip_vpa"),
+        "views": (doc.get("views") or 0) + 1,
+        "tips_total_inr": doc.get("tips_total_inr") or 0,
+        "scenes": [
+            {"id": s.get("id"), "title": s.get("title"), "image_file": s.get("image_file")}
+            for s in (doc.get("scenes") or [])
+        ],
+        "final_film_available": bool(doc.get("final_film")),
+    }
+
+
+@api.get("/gallery/{pid}/stream")
+async def gallery_stream(pid: str):
+    """Public film stream — only for published projects."""
+    doc = await projects_col.find_one({"id": pid, "is_public": True}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Film not found or not public")
+    final_film = doc.get("final_film")
+    if not final_film:
+        raise HTTPException(404, "No film file")
+    path = STORAGE_DIR / final_film
+    if not path.exists():
+        raise HTTPException(404, "File missing")
+    return FileResponse(str(path), media_type="video/mp4")
+
+
+@api.post("/gallery/{pid}/tip")
+async def tip_creator(pid: str, body: TipRequest):
+    doc = await projects_col.find_one({"id": pid, "is_public": True})
+    if not doc:
+        raise HTTPException(404, "Film not found or not public")
+
+    amount = float(body.amount_inr or 0)
+    if amount < 49:
+        raise HTTPException(400, "Minimum tip is ₹49")
+    if amount > 10000:
+        raise HTTPException(400, "Maximum tip is ₹10,000")
+
+    origin = body.origin_url.rstrip("/")
+    success_url = f"{origin}/gallery/{pid}?tip_session_id={{CHECKOUT_SESSION_ID}}&tipped=1"
+    cancel_url = f"{origin}/gallery/{pid}?tipped=0"
+    webhook_host = os.getenv("APP_URL") or origin
+
+    try:
+        session = await payments.create_checkout(
+            webhook_host_url=webhook_host,
+            amount_inr=amount,
+            project_id=pid,
+            user_id=body.user_id,
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Tip checkout failed: {e}")
+
+    await payments_col.insert_one({
+        "project_id": pid,
+        "user_id": body.user_id,
+        "session_id": session.session_id,
+        "amount": amount,
+        "currency": "inr",
+        "purpose": "tip",
+        "message": (body.message or "")[:200],
+        "payment_status": "initiated",
+        "status": "pending",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+    return {"ok": True, "url": session.url, "session_id": session.session_id, "amount_inr": amount}
+
+
+@api.get("/tip/status/{session_id}")
+async def tip_status(session_id: str):
+    tx = await payments_col.find_one({"session_id": session_id, "purpose": "tip"})
+    if not tx:
+        raise HTTPException(404, "Tip session not found")
+    webhook_host = os.getenv("APP_URL", "")
+    try:
+        status = await payments.get_status(webhook_host, session_id)
+    except Exception as e:
+        raise HTTPException(500, f"Status check failed: {e}")
+
+    await payments_col.update_one(
+        {"session_id": session_id},
+        {"$set": {
+            "status": status.status,
+            "payment_status": status.payment_status,
+            "updated_at": now_iso(),
+        }},
+    )
+
+    if status.payment_status == "paid" and tx.get("payment_status") != "paid":
+        pid = tx.get("project_id")
+        amount = tx.get("amount") or 0
+        if pid:
+            await projects_col.update_one(
+                {"id": pid},
+                {"$inc": {"tips_total_inr": float(amount)}},
+            )
+        await payments_col.update_one(
+            {"session_id": session_id},
+            {"$set": {"payment_status": "paid"}},
+        )
+
+    return {
+        "session_id": session_id,
+        "status": status.status,
+        "payment_status": status.payment_status,
+        "amount_total": status.amount_total,
+        "currency": status.currency,
+        "project_id": tx.get("project_id"),
+    }
 
 
 @api.get("/storage/{filename}")

@@ -39,6 +39,7 @@ export default function Landing() {
             <a href="#how" className="hover:text-white transition" data-testid="nav-how">How it works</a>
             <a href="#inputs" className="hover:text-white transition" data-testid="nav-inputs">Inputs</a>
             <a href="#safety" className="hover:text-white transition" data-testid="nav-safety">Safety</a>
+            <Link to="/gallery" className="hover:text-white transition" data-testid="nav-gallery">Gallery</Link>
           </div>
           <Link to="/studio" className="btn-gold text-sm" data-testid="nav-open-studio">
             Open Studio <PlayCircle className="w-4 h-4" />

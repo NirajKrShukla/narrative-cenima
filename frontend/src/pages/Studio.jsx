@@ -7,6 +7,7 @@ import {
   Image as ImageIcon, Video, Volume2, Layers, Download, Loader2, ChevronRight,
   ArrowLeft, Play, ShieldCheck, RefreshCw, Zap, Lock, Share2, IndianRupee,
   Copy, Check, MessageCircle, Twitter, Facebook, Send, Linkedin, Youtube, Instagram,
+  Settings, Globe, Heart, Rocket, AlertCircle,
 } from "lucide-react";
 import { API, assetUrl } from "../lib/api";
 
@@ -118,6 +119,9 @@ export default function Studio() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Link to="/gallery" className="text-sm text-white/70 hover:text-white transition flex items-center gap-1.5" data-testid="nav-gallery">
+              <Globe className="w-4 h-4 text-gold" /> Gallery
+            </Link>
             <div className="hidden md:flex items-center gap-1 text-xs text-white/50">
               <ShieldCheck className="w-3.5 h-3.5 text-gold" /> Copyright-safe pipeline
             </div>
@@ -185,6 +189,9 @@ export default function Studio() {
                 {activeTab === "scenes" && (
                   <ScenesPanel project={project} onReload={() => loadProject(project.id)} />
                 )}
+                {activeTab === "batch" && (
+                  <BatchPanel project={project} onReload={() => loadProject(project.id)} />
+                )}
                 {activeTab === "assemble" && (
                   <AssemblePanel project={project} onReload={() => loadProject(project.id)} />
                 )}
@@ -218,11 +225,13 @@ const TABS = [
   { key: "ingest", label: "Ingest", icon: FileText },
   { key: "characters", label: "Characters", icon: Users },
   { key: "scenes", label: "Scenes", icon: Layers },
+  { key: "batch", label: "Auto-Pilot", icon: Rocket },
   { key: "assemble", label: "Assemble", icon: Film },
 ];
 
 const ProjectHeader = ({ project, activeTab, setActiveTab, loading, onReload }) => {
   const analyzed = !!project.blueprint;
+  const [settingsOpen, setSettingsOpen] = useState(false);
   return (
     <div>
       <div className="flex items-start justify-between gap-6 flex-wrap">
@@ -243,11 +252,27 @@ const ProjectHeader = ({ project, activeTab, setActiveTab, loading, onReload }) 
           )}
         </div>
         <div className="flex items-center gap-2">
+          <button className="btn-ghost text-sm" onClick={() => setSettingsOpen((v) => !v)} data-testid="settings-toggle">
+            <Settings className="w-3.5 h-3.5" /> Voice &amp; language
+          </button>
           <button className="btn-ghost text-sm" onClick={onReload} data-testid="reload-btn">
             <RefreshCw className="w-3.5 h-3.5" /> Refresh
           </button>
         </div>
       </div>
+
+      <AnimatePresence>
+        {settingsOpen && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <VoiceLanguageSettings project={project} onReload={onReload} onClose={() => setSettingsOpen(false)} />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="mt-6 flex items-center gap-2 border-b border-white/5">
         {TABS.map((t) => {
@@ -1020,9 +1045,76 @@ const UnlockAndShare = ({ project, unlock, unlocked, loading, payBusy, polling, 
           <div className="text-[11px] text-white/40 mt-2">
             YouTube &amp; Instagram require using their native apps — download first, then upload from the app.
           </div>
+
+          <PublishSection project={project} onRefresh={onRefresh} />
         </div>
       )}
     </Section>
+  );
+};
+
+// ---------- Publish to Gallery ----------
+const PublishSection = ({ project, onRefresh }) => {
+  const [isPublic, setIsPublic] = useState(!!project.is_public);
+  const [tipVpa, setTipVpa] = useState(project.tip_vpa || "");
+  const [busy, setBusy] = useState(false);
+
+  const publish = async (val) => {
+    setBusy(true);
+    try {
+      await API.post(`/projects/${project.id}/publish`, { is_public: val, tip_vpa: tipVpa });
+      setIsPublic(val);
+      toast.success(val ? "Published to public gallery" : "Removed from gallery");
+      await onRefresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Publish failed");
+    } finally { setBusy(false); }
+  };
+
+  const galleryUrl = `${window.location.origin}/gallery/${project.id}`;
+
+  return (
+    <div className="mt-6 rounded-md border border-white/10 bg-black/30 p-5" data-testid="publish-section">
+      <div className="flex items-center gap-2 mb-2">
+        <Globe className="w-4 h-4 text-gold" />
+        <div className="font-display text-lg">Publish to public gallery</div>
+      </div>
+      <p className="text-xs text-white/50 mb-4">
+        Let anyone watch your film on the AiPillu gallery. Viewers can send you tips over UPI — 100% goes to the creator margin.
+      </p>
+      <div className="space-y-3">
+        <div>
+          <label className="overline">Display UPI ID (optional)</label>
+          <input
+            className="input-field mt-2"
+            value={tipVpa}
+            onChange={(e) => setTipVpa(e.target.value)}
+            placeholder="e.g. yourname@okhdfcbank"
+            data-testid="publish-vpa"
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {isPublic ? (
+            <>
+              <Pill tone="ok">public</Pill>
+              <a href={galleryUrl} target="_blank" rel="noreferrer" className="btn-ghost text-xs" data-testid="publish-view">
+                <Globe className="w-3.5 h-3.5" /> View public page
+              </a>
+              <button className="btn-ghost text-xs" onClick={() => publish(false)} disabled={busy} data-testid="publish-unpublish">
+                {busy ? <Spinner /> : <Lock className="w-3.5 h-3.5" />} Make private
+              </button>
+              <button className="btn-gold text-xs" onClick={() => publish(true)} disabled={busy} data-testid="publish-update">
+                {busy ? <Spinner /> : <Check className="w-3.5 h-3.5" />} Update
+              </button>
+            </>
+          ) : (
+            <button className="btn-gold" onClick={() => publish(true)} disabled={busy} data-testid="publish-btn">
+              {busy ? <Spinner /> : <Rocket className="w-4 h-4" />} Publish to gallery
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -1032,3 +1124,274 @@ const MetricBox = ({ label, value }) => (
     <div className="font-display text-xl mt-1">{value}</div>
   </div>
 );
+
+
+// ---------- Voice & Language Settings ----------
+const VOICES = [
+  { id: "alloy", desc: "Neutral, balanced" },
+  { id: "ash", desc: "Clear, articulate" },
+  { id: "coral", desc: "Warm, friendly" },
+  { id: "echo", desc: "Smooth, calm" },
+  { id: "fable", desc: "Expressive, storytelling" },
+  { id: "nova", desc: "Energetic, upbeat" },
+  { id: "onyx", desc: "Deep, authoritative" },
+  { id: "sage", desc: "Wise, measured" },
+  { id: "shimmer", desc: "Bright, cheerful" },
+];
+
+const LANGUAGES = [
+  { id: "auto", label: "Auto-detect (from story)" },
+  { id: "en", label: "English" },
+  { id: "hi", label: "Hindi (हिन्दी)" },
+  { id: "sa", label: "Sanskrit (संस्कृतम्)" },
+  { id: "bn", label: "Bengali (বাংলা)" },
+  { id: "ta", label: "Tamil (தமிழ்)" },
+  { id: "te", label: "Telugu (తెలుగు)" },
+  { id: "mr", label: "Marathi (मराठी)" },
+  { id: "gu", label: "Gujarati (ગુજરાતી)" },
+  { id: "kn", label: "Kannada (ಕನ್ನಡ)" },
+  { id: "ml", label: "Malayalam (മലയാളം)" },
+  { id: "pa", label: "Punjabi (ਪੰਜਾਬੀ)" },
+  { id: "ur", label: "Urdu (اردو)" },
+  { id: "es", label: "Spanish" },
+  { id: "fr", label: "French" },
+  { id: "de", label: "German" },
+];
+
+const VoiceLanguageSettings = ({ project, onReload }) => {
+  const [voice, setVoice] = useState(project.voice || "onyx");
+  const [voiceModel, setVoiceModel] = useState(project.voice_model || "tts-1");
+  const [language, setLanguage] = useState(project.language_hint || "auto");
+  const [title, setTitle] = useState(project.title || "");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await API.patch(`/projects/${project.id}/settings`, {
+        voice, voice_model: voiceModel, language_hint: language, title,
+      });
+      toast.success("Settings saved");
+      await onReload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Save failed");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="card p-6 mt-4" data-testid="voice-settings-panel">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div className="lg:col-span-2">
+          <label className="overline">Project title</label>
+          <input
+            className="input-field mt-2"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            data-testid="settings-title"
+          />
+        </div>
+        <div>
+          <label className="overline">Voice</label>
+          <select
+            className="input-field mt-2"
+            value={voice}
+            onChange={(e) => setVoice(e.target.value)}
+            data-testid="settings-voice"
+          >
+            {VOICES.map((v) => (
+              <option key={v.id} value={v.id}>{v.id} — {v.desc}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="overline">Quality</label>
+          <select
+            className="input-field mt-2"
+            value={voiceModel}
+            onChange={(e) => setVoiceModel(e.target.value)}
+            data-testid="settings-voice-model"
+          >
+            <option value="tts-1">tts-1 (fast)</option>
+            <option value="tts-1-hd">tts-1-hd (studio-grade)</option>
+          </select>
+        </div>
+        <div className="lg:col-span-2">
+          <label className="overline">Narration language</label>
+          <select
+            className="input-field mt-2"
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            data-testid="settings-language"
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.id} value={l.id}>{l.label}</option>
+            ))}
+          </select>
+          <div className="mt-1 text-[11px] text-white/40">
+            Applied to future narrations you generate. Re-run the narration step to hear the new voice.
+          </div>
+        </div>
+        <div className="lg:col-span-2 flex items-end justify-end">
+          <button className="btn-gold" onClick={save} disabled={saving} data-testid="settings-save">
+            {saving ? <Spinner /> : <Check className="w-4 h-4" />} Save settings
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---------- Auto-Pilot Batch Panel ----------
+const BATCH_MODES = [
+  { id: "all", label: "Full film", desc: "Images → Narration → Video (Ken-Burns) → Mux → Assemble" },
+  { id: "images", label: "All scene images", desc: "Nano Banana across every scene" },
+  { id: "narration", label: "All narrations", desc: "Uses project voice & language" },
+  { id: "kenburns", label: "Ken-Burns motion", desc: "Instant motion from existing images" },
+  { id: "sora", label: "Sora 2 clips (slow, premium)", desc: "~3 min per scene, higher cost" },
+];
+
+const BatchPanel = ({ project, onReload }) => {
+  const [mode, setMode] = useState("all");
+  const [videoType, setVideoType] = useState("kenburns");
+  const [batch, setBatch] = useState(project.batch || null);
+  const [starting, setStarting] = useState(false);
+  const timerRef = useRef(null);
+
+  const fetchBatch = useCallback(async () => {
+    try {
+      const { data } = await API.get(`/projects/${project.id}/batch`);
+      setBatch(data);
+      if (data?.running) return true;
+    } catch (e) { /* ignore */ }
+    return false;
+  }, [project.id]);
+
+  useEffect(() => {
+    fetchBatch();
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [fetchBatch]);
+
+  useEffect(() => {
+    if (batch?.running) {
+      timerRef.current = setInterval(async () => {
+        const running = await fetchBatch();
+        if (!running && timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+          await onReload();
+          toast.success("Auto-Pilot finished");
+        }
+      }, 2500);
+      return () => timerRef.current && clearInterval(timerRef.current);
+    }
+  }, [batch?.running]);
+
+  const start = async () => {
+    setStarting(true);
+    try {
+      await API.post(`/projects/${project.id}/batch`, { mode, video_type: videoType });
+      toast.success("Auto-Pilot started");
+      await fetchBatch();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Start failed");
+    } finally { setStarting(false); }
+  };
+
+  const percent = batch?.total ? Math.min(100, Math.round((batch.completed / batch.total) * 100)) : 0;
+  const scenes = project.scenes || [];
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="lg:col-span-2">
+        <Section title="Auto-Pilot" icon={Rocket} testid="batch-section"
+          right={batch?.running ? <Pill tone="warn">running</Pill> : batch?.finished_at ? <Pill tone="ok">last run · done</Pill> : <Pill>idle</Pill>}
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
+            {BATCH_MODES.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setMode(m.id)}
+                disabled={batch?.running}
+                className={`text-left p-4 rounded-md border transition ${
+                  mode === m.id ? "border-gold/50 bg-gold/5" : "border-white/10 hover:border-white/25"
+                }`}
+                data-testid={`batch-mode-${m.id}`}
+              >
+                <div className="font-medium text-sm">{m.label}</div>
+                <div className="text-xs text-white/50 mt-1">{m.desc}</div>
+              </button>
+            ))}
+          </div>
+
+          {mode === "all" && (
+            <div className="mb-5">
+              <label className="overline">Video engine for &ldquo;full film&rdquo; mode</label>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <button
+                  className={`p-3 rounded-md border text-sm ${videoType === "kenburns" ? "border-gold/50 bg-gold/5" : "border-white/10"}`}
+                  onClick={() => setVideoType("kenburns")}
+                  data-testid="batch-video-kb"
+                >
+                  Ken-Burns · instant, free
+                </button>
+                <button
+                  className={`p-3 rounded-md border text-sm ${videoType === "sora" ? "border-gold/50 bg-gold/5" : "border-white/10"}`}
+                  onClick={() => setVideoType("sora")}
+                  data-testid="batch-video-sora"
+                >
+                  Sora 2 · slow, premium
+                </button>
+              </div>
+            </div>
+          )}
+
+          <button className="btn-gold w-full justify-center" onClick={start} disabled={starting || batch?.running || scenes.length === 0} data-testid="batch-start">
+            {starting || batch?.running ? <Spinner /> : <Rocket className="w-4 h-4" />}
+            {batch?.running ? "Auto-Pilot running…" : "Start Auto-Pilot"}
+          </button>
+
+          {batch && (batch.running || batch.total > 0) && (
+            <div className="mt-6" data-testid="batch-progress">
+              <div className="flex items-center justify-between text-sm mb-2">
+                <span className="text-white/60">
+                  {batch.running ? "Working on" : "Finished"} · <span className="text-gold font-mono">{batch.current || "—"}</span>
+                </span>
+                <span className="font-mono text-xs text-white/50">{batch.completed} / {batch.total}</span>
+              </div>
+              <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+                <div
+                  className="h-full bg-gold transition-all duration-500"
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+              {batch.errors && batch.errors.length > 0 && (
+                <div className="mt-4 rounded border border-red-500/20 bg-red-500/5 p-3">
+                  <div className="flex items-center gap-2 text-red-300 text-xs mb-2">
+                    <AlertCircle className="w-3.5 h-3.5" /> {batch.errors.length} scene issue{batch.errors.length > 1 ? "s" : ""}
+                  </div>
+                  <div className="space-y-1 text-[11px] font-mono text-white/60 max-h-32 overflow-y-auto">
+                    {batch.errors.map((e, i) => <div key={i}>{e}</div>)}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Section>
+      </div>
+
+      <Section title="What Auto-Pilot does" icon={Sparkles} testid="batch-info">
+        <ul className="space-y-3 text-sm text-white/70">
+          <li className="flex gap-3"><span className="text-gold font-mono text-xs mt-1">01</span> Reads the analyzed blueprint from your project.</li>
+          <li className="flex gap-3"><span className="text-gold font-mono text-xs mt-1">02</span> Generates a storyboard image per scene (Nano Banana).</li>
+          <li className="flex gap-3"><span className="text-gold font-mono text-xs mt-1">03</span> Voices the narration using your chosen voice &amp; language.</li>
+          <li className="flex gap-3"><span className="text-gold font-mono text-xs mt-1">04</span> Animates each scene with Ken-Burns motion (or Sora 2 if premium).</li>
+          <li className="flex gap-3"><span className="text-gold font-mono text-xs mt-1">05</span> Muxes audio + subtitles into each clip.</li>
+          <li className="flex gap-3"><span className="text-gold font-mono text-xs mt-1">06</span> Assembles the final MP4 automatically.</li>
+        </ul>
+        <div className="mt-5 p-3 rounded border border-white/5 bg-black/40 text-xs text-white/50">
+          Progress is polled every 2.5s. Errors on individual scenes don&apos;t stop the pipeline — you can retry them from the Scenes tab afterwards.
+        </div>
+      </Section>
+    </div>
+  );
+};

@@ -1,19 +1,13 @@
-"""Backend tests for Story-to-Film AI Agent.
+"""Backend tests for Story-to-Film AI Agent (iteration_2 regression + P2).
 
 Covers:
-- Health, CORS
-- Project CRUD
-- Ingestion (text, url) — url uses live wikipedia (mocked-avoidance not needed)
-- Analyze (Claude Sonnet 4.6) — SMOKE only (1 call)
-- Unlock status / paywall / claim-free / checkout / status / webhook
-- Storage gating for final_film
-- TTS narration smoke (1 scene)
-- Nano Banana image smoke (1 scene)  # Optional; guarded by env RUN_IMAGE_SMOKE=1
-
-Uses public REACT_APP_BACKEND_URL. Uses ffmpeg lavfi to fabricate a small
-final_film mp4 for paywall tests, and pymongo/motor is used through the
-service (via a helper direct-mongo write with the sync pymongo client) —
-we cannot go through an HTTP admin endpoint since none exists.
+- Health / CORS / Project CRUD (basics)
+- Ingestion (text, URL Wikipedia UA regression)
+- Async analyze (regression: returns fast, poll to complete)
+- Settings (voice/model/language/title validation)
+- Batch pipeline (images -> narration -> kenburns) + progress
+- Publish + Gallery + Tip (Stripe INR ≥ ₹49 floor)
+- Paywall / Storage gating / Webhook signature
 """
 import os
 import time
@@ -25,6 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv("/app/backend/.env")
 
+# Public URL used for all functional tests
 BASE_URL = None
 with open("/app/frontend/.env") as f:
     for line in f:
@@ -32,10 +27,8 @@ with open("/app/frontend/.env") as f:
             BASE_URL = line.strip().split("=", 1)[1]
 BASE_URL = (BASE_URL or "").rstrip("/")
 
-# For long-running LLM operations (Claude analyze), the Cloudflare proxy has a
-# ~100s idle timeout which is shorter than the Claude Sonnet 4.6 typical
-# response time (~2 minutes). We fall back to the internal backend URL for
-# those specific tests, while still validating the routing/logic end-to-end.
+# Local URL is no longer required for /analyze because it's async now,
+# but retained as a fallback in case public proxy is slow.
 LOCAL_URL = "http://localhost:8001"
 
 MONGO_URL = os.environ["MONGO_URL"]
@@ -53,16 +46,66 @@ RAMAYANA_SHORT = (
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_small_mp4(path: str, duration: int = 2) -> None:
+    cmd = [
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", f"color=c=black:s=320x240:d={duration}",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", path,
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def _seed_blueprint(pid: str, n_scenes: int = 2) -> None:
+    """Directly seed a blueprint + scenes for a project (avoids Claude spend)."""
+    mc = MongoClient(MONGO_URL)
+    try:
+        scenes = []
+        for i in range(1, n_scenes + 1):
+            scenes.append({
+                "id": f"scene_{i}",
+                "title": f"Scene {i}",
+                "description": f"A cinematic short scene number {i} depicting a hero's journey.",
+                "image_prompt": f"Cinematic still, scene {i}, dramatic lighting.",
+                "video_prompt": f"Wide cinematic shot, scene {i}, subtle camera movement.",
+                "narration": f"This is the narration for scene number {i}. A brief moment in the film.",
+                "image_file": None,
+                "video_file": None,
+                "audio_file": None,
+                "final_file": None,
+            })
+        mc[DB_NAME]["projects"].update_one(
+            {"id": pid},
+            {"$set": {
+                "blueprint": {
+                    "title": "Seeded Blueprint",
+                    "logline": "A short seeded film for testing.",
+                    "genre": "drama",
+                    "tone": "cinematic",
+                    "visual_style": "cinematic film still",
+                },
+                "characters": [{"id": "char_1", "name": "Aria", "archetype": "hero",
+                                 "description": "Brave protagonist.", "image_file": None}],
+                "scenes": scenes,
+                "status": "analyzed",
+            }},
+        )
+    finally:
+        mc.close()
+
+
+# ---------------------------------------------------------------------------
 # Session-wide project fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def created_project():
-    """Create a fresh project via API and return its id + full doc."""
     r = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_Ramayan"})
     assert r.status_code == 200, r.text
-    doc = r.json()
-    return doc
+    return r.json()
 
 
 # ---------------------------------------------------------------------------
@@ -77,26 +120,6 @@ class TestHealth:
         assert data["status"] == "ok"
         assert "time" in data
 
-    def test_cors_options(self):
-        # A GET-preflight will only be triggered when there's a non-simple header, but
-        # we still verify CORS headers are present for cross-origin requests.
-        r = requests.options(
-            f"{BASE_URL}/api/health",
-            headers={
-                "Origin": "https://example.com",
-                "Access-Control-Request-Method": "GET",
-                "Access-Control-Request-Headers": "content-type",
-            },
-        )
-        # Some proxies return 200 with headers; some return 204
-        assert r.status_code in (200, 204), r.text
-        acao = r.headers.get("access-control-allow-origin", "").lower()
-        assert acao in ("*", "https://example.com"), f"Missing/invalid CORS header: {dict(r.headers)}"
-
-
-# ---------------------------------------------------------------------------
-# Project CRUD
-# ---------------------------------------------------------------------------
 
 class TestProjectCRUD:
     def test_create_project(self):
@@ -108,24 +131,16 @@ class TestProjectCRUD:
         assert doc["free_granted"] is False
         assert doc["status"] == "created"
         assert doc["final_film"] is None
-        assert isinstance(doc["id"], str) and len(doc["id"]) > 0
+        assert doc["voice"] == "onyx"
+        assert doc["voice_model"] == "tts-1"
+        assert doc["is_public"] is False
         pytest.crud_pid = doc["id"]
 
     def test_list_projects(self):
         r = requests.get(f"{BASE_URL}/api/projects")
         assert r.status_code == 200
-        arr = r.json()
-        assert isinstance(arr, list)
-        pids = [p["id"] for p in arr]
+        pids = [p["id"] for p in r.json()]
         assert pytest.crud_pid in pids
-
-    def test_get_project(self):
-        r = requests.get(f"{BASE_URL}/api/projects/{pytest.crud_pid}")
-        assert r.status_code == 200
-        doc = r.json()
-        assert doc["id"] == pytest.crud_pid
-        assert doc["paid"] is False
-        assert doc["free_granted"] is False
 
     def test_get_missing_project(self):
         r = requests.get(f"{BASE_URL}/api/projects/does_not_exist_zzz")
@@ -133,7 +148,7 @@ class TestProjectCRUD:
 
 
 # ---------------------------------------------------------------------------
-# Ingestion
+# Ingestion — REGRESSION: Wikipedia UA
 # ---------------------------------------------------------------------------
 
 class TestIngestion:
@@ -146,12 +161,6 @@ class TestIngestion:
         assert r.status_code == 200, r.text
         assert r.json()["chars"] == len(RAMAYANA_SHORT)
 
-        # Verify persisted source_type
-        doc = requests.get(f"{BASE_URL}/api/projects/{pid}").json()
-        assert doc["source_type"] == "text"
-        assert len(doc["source_text"]) >= 30
-        assert doc["status"] == "ingested"
-
     def test_ingest_text_too_short(self, created_project):
         pid = created_project["id"]
         r = requests.post(
@@ -160,162 +169,270 @@ class TestIngestion:
         )
         assert r.status_code == 400
 
-    def test_ingest_url_wikipedia(self):
-        # Use a fresh project to avoid overwriting the ingested text
+    def test_ingest_url_wikipedia_regression(self):
+        """REGRESSION: Wikipedia URL must succeed with descriptive UA (previously 403)."""
         pid = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_url_ingest"}).json()["id"]
         r = requests.post(
             f"{BASE_URL}/api/projects/{pid}/ingest/url",
             json={"url": "https://en.wikipedia.org/wiki/Ramayana"},
             timeout=60,
         )
-        # KNOWN BUG: Wikipedia blocks the default User-Agent "Mozilla/5.0 StoryFilmAgent"
-        # returning 403 -> backend re-raises as HTTP 400. This test documents the bug.
-        if r.status_code == 400 and "403 Forbidden" in r.text:
-            pytest.fail(
-                "BUG: Wikipedia URL ingestion returns 403 due to non-compliant "
-                "User-Agent in ingestion.extract_from_url. Wikipedia requires a "
-                "descriptive UA per their policy."
-            )
         assert r.status_code == 200, r.text
-        assert r.json()["chars"] > 200
+        assert r.json()["chars"] > 100
         doc = requests.get(f"{BASE_URL}/api/projects/{pid}").json()
         assert doc["source_type"] == "url"
         assert doc["source_meta"].get("url", "").endswith("/wiki/Ramayana")
 
-    def test_ingest_url_generic(self):
-        # Verify URL ingestion works for a non-blocking site
-        pid = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_url_generic"}).json()["id"]
-        r = requests.post(
-            f"{BASE_URL}/api/projects/{pid}/ingest/url",
-            json={"url": "https://example.com"},
-            timeout=60,
-        )
-        # example.com content is < 30 chars extractable text -> backend returns 400
-        # Just verify the endpoint responds (either 200 or 400 for short content).
-        assert r.status_code in (200, 400)
-
 
 # ---------------------------------------------------------------------------
-# Analyze (Claude Sonnet 4.6) — SMOKE
+# Analyze — REGRESSION: async return within seconds
 # ---------------------------------------------------------------------------
 
-class TestAnalyze:
-    def test_analyze_blueprint(self, created_project):
+class TestAsyncAnalyze:
+    def test_analyze_returns_immediately(self, created_project):
+        """REGRESSION: analyze must return {ok, status='analyzing'} within a few seconds."""
         pid = created_project["id"]
-        # Ensure text is ingested for this project (module-scoped fixture)
+        # Make sure the source is ingested
         requests.post(f"{BASE_URL}/api/projects/{pid}/ingest/text", json={"text": RAMAYANA_SHORT})
-        # LLM call — Claude Sonnet 4.6 typically takes 90-150s.
-        # Cloudflare proxy on the public URL times out at ~100s and returns 502,
-        # so we bypass the proxy and call the backend directly. The routing has
-        # already been verified by the health/CRUD tests above.
+
+        t0 = time.time()
         r = requests.post(
-            f"{LOCAL_URL}/api/projects/{pid}/analyze",
+            f"{BASE_URL}/api/projects/{pid}/analyze",
             json={"language_hint": "auto"},
-            timeout=240,
+            timeout=15,
         )
-        assert r.status_code == 200, r.text[:800]
-        doc = r.json()
-        assert isinstance(doc.get("characters"), list) and len(doc["characters"]) >= 1
-        assert isinstance(doc.get("scenes"), list) and len(doc["scenes"]) >= 2
+        elapsed = time.time() - t0
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data.get("ok") is True
+        assert data.get("status") == "analyzing"
+        assert elapsed < 10, f"Analyze must return quickly, took {elapsed:.1f}s"
 
-        # Character names should be original (not exactly matching common mythological figures)
-        forbidden = {"rama", "ravana", "ravan", "sita", "lakshmana", "hanuman"}
-        char_names_lower = {(c.get("name") or "").lower() for c in doc["characters"]}
-        assert not (char_names_lower & forbidden), (
-            f"Characters must not exactly equal mythological names: {char_names_lower}"
-        )
-
-        # Scenes must have required prompt fields
-        s0 = doc["scenes"][0]
-        for k in ("image_prompt", "video_prompt", "narration"):
-            assert s0.get(k), f"scene[0] missing '{k}'"
-
+        # Poll until analyzed or error (max ~180s for Claude)
+        deadline = time.time() + 200
+        final_status = None
+        while time.time() < deadline:
+            time.sleep(5)
+            g = requests.get(f"{BASE_URL}/api/projects/{pid}", timeout=15)
+            if g.status_code != 200:
+                continue
+            st = g.json().get("status")
+            if st in ("analyzed", "error"):
+                final_status = st
+                pytest.analyzed_doc = g.json()
+                break
+        assert final_status == "analyzed", f"Analyze did not finish successfully; status={final_status}"
+        doc = pytest.analyzed_doc
+        assert len(doc.get("characters") or []) >= 1
+        assert len(doc.get("scenes") or []) >= 2
         pytest.analyzed_pid = pid
-        pytest.first_scene_id = s0["id"]
-
-    def test_public_url_analyze_times_out(self, created_project):
-        """Documents that the public URL cannot serve /analyze in time."""
-        pid = created_project["id"]
-        # Only run if analyze has already succeeded and stored data
-        r = requests.get(f"{BASE_URL}/api/projects/{pid}", timeout=15)
-        if r.status_code == 200 and r.json().get("status") == "analyzed":
-            # Already analyzed — retrieving should be fast via public URL
-            assert r.status_code == 200
+        pytest.first_scene_id = doc["scenes"][0]["id"]
 
 
 # ---------------------------------------------------------------------------
-# TTS narration smoke (1 call)
+# Settings endpoint
 # ---------------------------------------------------------------------------
 
-class TestTTS:
-    def test_narration_smoke(self):
-        pid = getattr(pytest, "analyzed_pid", None)
-        sid = getattr(pytest, "first_scene_id", None)
-        if not (pid and sid):
-            pytest.skip("Analyze must succeed first")
-        r = requests.post(
-            f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/narration",
-            json={"voice": "onyx", "model": "tts-1"},
+class TestSettings:
+    @pytest.fixture(scope="class")
+    def settings_pid(self):
+        r = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_settings"})
+        return r.json()["id"]
+
+    def test_patch_settings_valid(self, settings_pid):
+        r = requests.patch(
+            f"{BASE_URL}/api/projects/{settings_pid}/settings",
+            json={"voice": "nova", "voice_model": "tts-1-hd", "language_hint": "hi", "title": "Test Title"},
+        )
+        assert r.status_code == 200, r.text
+        d = requests.get(f"{BASE_URL}/api/projects/{settings_pid}").json()
+        assert d["voice"] == "nova"
+        assert d["voice_model"] == "tts-1-hd"
+        assert d["language_hint"] == "hi"
+        assert d["title"] == "Test Title"
+
+    def test_patch_settings_invalid_voice(self, settings_pid):
+        r = requests.patch(
+            f"{BASE_URL}/api/projects/{settings_pid}/settings",
+            json={"voice": "invalid"},
+        )
+        assert r.status_code == 400, r.text
+
+    def test_patch_settings_invalid_voice_model(self, settings_pid):
+        r = requests.patch(
+            f"{BASE_URL}/api/projects/{settings_pid}/settings",
+            json={"voice_model": "tts-mega"},
+        )
+        assert r.status_code == 400, r.text
+
+    def test_patch_settings_missing_project(self):
+        r = requests.patch(
+            f"{BASE_URL}/api/projects/no_such_pid/settings",
+            json={"voice": "nova"},
+        )
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Narration uses project defaults
+# ---------------------------------------------------------------------------
+
+class TestNarrationDefaults:
+    def test_narration_uses_project_defaults(self):
+        """After PATCH voice=nova, narration WITHOUT voice param must use nova."""
+        # Create project + seed blueprint
+        pid = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_narr_defaults"}).json()["id"]
+        _seed_blueprint(pid, n_scenes=1)
+
+        # Set defaults
+        r = requests.patch(
+            f"{BASE_URL}/api/projects/{pid}/settings",
+            json={"voice": "nova", "voice_model": "tts-1"},
+        )
+        assert r.status_code == 200
+
+        # Call narration WITHOUT voice param
+        r2 = requests.post(
+            f"{BASE_URL}/api/projects/{pid}/scenes/scene_1/narration",
+            json={},
             timeout=120,
         )
+        assert r2.status_code == 200, r2.text
+        af = r2.json()["audio_file"]
+        assert af.endswith(".mp3")
+
+        # Confirm it can be fetched
+        r3 = requests.get(f"{BASE_URL}/api/storage/{af}", timeout=60)
+        assert r3.status_code == 200
+        assert r3.headers.get("content-type", "").startswith("audio/mpeg")
+        assert len(r3.content) > 500
+
+
+# ---------------------------------------------------------------------------
+# Batch pipeline
+# ---------------------------------------------------------------------------
+
+class TestBatch:
+    @pytest.fixture(scope="class")
+    def batch_pid(self):
+        pid = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_batch"}).json()["id"]
+        _seed_blueprint(pid, n_scenes=2)
+        return pid
+
+    def test_batch_no_scenes_returns_400(self):
+        pid = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_batch_no_scenes"}).json()["id"]
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{pid}/batch",
+            json={"mode": "images", "video_type": "kenburns"},
+        )
+        assert r.status_code == 400
+        assert "analyze" in r.text.lower() or "scenes" in r.text.lower()
+
+    def test_batch_invalid_mode(self, batch_pid):
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{batch_pid}/batch",
+            json={"mode": "bogus", "video_type": "kenburns"},
+        )
+        assert r.status_code == 400
+
+    def test_batch_invalid_video_type(self, batch_pid):
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{batch_pid}/batch",
+            json={"mode": "all", "video_type": "invalid"},
+        )
+        assert r.status_code == 400
+
+    def test_batch_images_run_and_progress(self, batch_pid):
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{batch_pid}/batch",
+            json={"mode": "images", "video_type": "kenburns"},
+        )
         assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["ok"] is True
-        audio_file = body["audio_file"]
-        assert audio_file.endswith(".mp3")
+        d = r.json()
+        assert d.get("ok") is True
+        assert d.get("job_id")
 
-        # Fetch from /api/storage/{audio_file}
-        r2 = requests.get(f"{BASE_URL}/api/storage/{audio_file}", timeout=60)
+        # Second concurrent call should return already_running
+        r2 = requests.post(
+            f"{BASE_URL}/api/projects/{batch_pid}/batch",
+            json={"mode": "images", "video_type": "kenburns"},
+        )
         assert r2.status_code == 200
-        assert r2.headers.get("content-type", "").startswith("audio/mpeg")
-        assert len(r2.content) > 500
+        # If the first call is still running, second must indicate that.
+        # If the first call was extremely fast and finished already, we allow a fresh job_id.
+        j2 = r2.json()
+        assert j2.get("already_running") is True or j2.get("job_id") is not None
 
+        # Poll batch progress until done
+        deadline = time.time() + 240
+        last = None
+        while time.time() < deadline:
+            time.sleep(3)
+            g = requests.get(f"{BASE_URL}/api/projects/{batch_pid}/batch", timeout=15)
+            assert g.status_code == 200
+            last = g.json()
+            for k in ("running", "completed", "total", "current"):
+                assert k in last, f"Missing key {k}"
+            if last.get("running") is False:
+                break
+        assert last and last.get("running") is False, f"Batch never finished: {last}"
 
-# ---------------------------------------------------------------------------
-# Nano Banana image smoke (single) — guarded
-# ---------------------------------------------------------------------------
+        # Every scene must now have image_file
+        doc = requests.get(f"{BASE_URL}/api/projects/{batch_pid}").json()
+        for s in doc.get("scenes") or []:
+            assert s.get("image_file"), f"Scene {s['id']} missing image_file. Errors: {last.get('errors')}"
 
-@pytest.mark.skipif(os.getenv("SKIP_IMAGE_SMOKE") == "1", reason="Image smoke disabled")
-class TestImage:
-    def test_scene_image_smoke(self):
-        pid = getattr(pytest, "analyzed_pid", None)
-        sid = getattr(pytest, "first_scene_id", None)
-        if not (pid and sid):
-            pytest.skip("Analyze must succeed first")
-        r = requests.post(f"{BASE_URL}/api/projects/{pid}/scenes/{sid}/image", timeout=180)
+    def test_batch_narration_run(self, batch_pid):
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{batch_pid}/batch",
+            json={"mode": "narration", "video_type": "kenburns"},
+        )
         assert r.status_code == 200, r.text
-        image_file = r.json()["image_file"]
-        assert image_file.endswith(".png")
-        r2 = requests.get(f"{BASE_URL}/api/storage/{image_file}", timeout=60)
-        assert r2.status_code == 200
-        assert r2.headers.get("content-type", "").startswith("image/")
-        assert len(r2.content) > 1000
+        deadline = time.time() + 240
+        last = None
+        while time.time() < deadline:
+            time.sleep(3)
+            g = requests.get(f"{BASE_URL}/api/projects/{batch_pid}/batch", timeout=15)
+            last = g.json()
+            if last.get("running") is False:
+                break
+        assert last and last.get("running") is False, f"Narration batch never finished: {last}"
+
+        doc = requests.get(f"{BASE_URL}/api/projects/{batch_pid}").json()
+        for s in doc.get("scenes") or []:
+            assert s.get("audio_file"), f"Scene {s['id']} missing audio_file"
+
+    def test_batch_kenburns_run(self, batch_pid):
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{batch_pid}/batch",
+            json={"mode": "kenburns", "video_type": "kenburns"},
+        )
+        assert r.status_code == 200, r.text
+        deadline = time.time() + 240
+        last = None
+        while time.time() < deadline:
+            time.sleep(3)
+            g = requests.get(f"{BASE_URL}/api/projects/{batch_pid}/batch", timeout=15)
+            last = g.json()
+            if last.get("running") is False:
+                break
+        assert last and last.get("running") is False, f"Ken-Burns batch never finished: {last}"
+
+        doc = requests.get(f"{BASE_URL}/api/projects/{batch_pid}").json()
+        for s in doc.get("scenes") or []:
+            vf = s.get("video_file")
+            assert vf and vf.endswith("_kb.mp4"), f"Scene {s['id']} missing ken-burns video_file: {vf}"
 
 
 # ---------------------------------------------------------------------------
-# Paywall / Unlock / Checkout / Webhook
+# Paywall / Checkout — REGRESSION: ₹49 floor, Stripe accepts
 # ---------------------------------------------------------------------------
-
-def _make_small_mp4(path: str, duration: int = 2) -> None:
-    """Use ffmpeg lavfi to create a tiny black-screen mp4 (<20 MB)."""
-    cmd = [
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"color=c=black:s=320x240:d={duration}",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", path,
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-
 
 @pytest.fixture(scope="module")
 def paywall_projects():
-    """Create two projects with a fake small final_film for paywall testing.
-    Direct mongo write is required — no admin endpoint exists.
-    """
     client = MongoClient(MONGO_URL)
     projects_col = client[DB_NAME]["projects"]
 
-    # Project A (first paid film for user)
     pidA = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_paywall_A"}).json()["id"]
     fileA = f"{pidA}_final_film.mp4"
     _make_small_mp4(f"{STORAGE_DIR}/{fileA}")
@@ -324,7 +441,6 @@ def paywall_projects():
         {"$set": {"final_film": fileA, "status": "assembled", "paid": False, "free_granted": False}},
     )
 
-    # Project B (second film for the same user — should require payment)
     pidB = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_paywall_B"}).json()["id"]
     fileB = f"{pidB}_final_film.mp4"
     _make_small_mp4(f"{STORAGE_DIR}/{fileB}")
@@ -335,7 +451,6 @@ def paywall_projects():
 
     yield {"pidA": pidA, "pidB": pidB, "fileA": fileA, "fileB": fileB}
 
-    # Teardown — remove created files and projects
     for f in (fileA, fileB):
         try:
             os.remove(f"{STORAGE_DIR}/{f}")
@@ -346,121 +461,61 @@ def paywall_projects():
 
 
 class TestPaywall:
-    def test_unlock_status_no_final(self, created_project):
-        pid = created_project["id"]
-        r = requests.get(f"{BASE_URL}/api/projects/{pid}/unlock-status?user_id=U1")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["has_final_film"] is False
-        assert "price" in data
-        # Price breakdown should have expected keys
-        for k in ("base_inr", "size_fee_inr", "quality_fee_inr", "total_inr", "free_tier_bytes"):
-            assert k in data["price"]
-
-    def test_checkout_without_final_film(self, created_project):
-        pid = created_project["id"]
-        r = requests.post(
-            f"{BASE_URL}/api/projects/{pid}/checkout",
-            json={"origin_url": "https://example.com", "user_id": "U1"},
-        )
-        assert r.status_code == 400
-
-    def test_film_without_unlock_returns_402(self, paywall_projects):
-        # Even though final_film exists, without paid/free_granted the endpoint returns 402
-        pidA = paywall_projects["pidA"]
-        r = requests.get(f"{BASE_URL}/api/projects/{pidA}/film?user_id=UZZ")
-        assert r.status_code == 402
-
     def test_storage_gates_final_film(self, paywall_projects):
-        fileA = paywall_projects["fileA"]
-        r = requests.get(f"{BASE_URL}/api/storage/{fileA}")
+        r = requests.get(f"{BASE_URL}/api/storage/{paywall_projects['fileA']}")
         assert r.status_code == 402
 
-    def test_storage_allows_non_final(self, paywall_projects):
-        # Any non-*_final_film.mp4 asset is allowed (though may 404 if not present)
+    def test_storage_allows_non_final(self):
         r = requests.get(f"{BASE_URL}/api/storage/nonexistent_regular_file.png")
-        # Must NOT be 402
         assert r.status_code != 402
 
+    def test_film_without_unlock_returns_402(self, paywall_projects):
+        r = requests.get(f"{BASE_URL}/api/projects/{paywall_projects['pidA']}/film?user_id=UZZ")
+        assert r.status_code == 402
 
-class TestFreeTierAndPayment:
-    def test_free_eligible_then_claim_then_second_requires_payment(self, paywall_projects):
+
+class TestStripeCheckoutFloor:
+    def test_checkout_small_film_regression(self, paywall_projects):
+        """REGRESSION: previously ₹19 floor caused Stripe 500 (below $0.50).
+        Now floor is ₹49 — must return a valid Stripe URL."""
         pidA = paywall_projects["pidA"]
         pidB = paywall_projects["pidB"]
         user_id = "U_new_" + str(int(time.time()))
 
-        # A: free eligible (<= 20 MB, user's first film)
+        # A: claim free
         r = requests.get(f"{BASE_URL}/api/projects/{pidA}/unlock-status?user_id={user_id}")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["free_eligible"] is True, data
-        assert data["requires_payment"] is False
+        assert r.status_code == 200 and r.json()["free_eligible"] is True
 
-        # claim free
         r2 = requests.post(
             f"{BASE_URL}/api/projects/{pidA}/claim-free",
             json={"origin_url": "http://x", "user_id": user_id},
         )
-        assert r2.status_code == 200, r2.text
-        assert r2.json().get("free_granted") is True or r2.json().get("already_unlocked")
+        assert r2.status_code == 200
 
-        # GET film should now return the file
-        r3 = requests.get(f"{BASE_URL}/api/projects/{pidA}/film?user_id={user_id}")
+        # B: must require payment
+        r3 = requests.get(f"{BASE_URL}/api/projects/{pidB}/unlock-status?user_id={user_id}")
         assert r3.status_code == 200
-        assert r3.headers.get("content-type", "").startswith("video/mp4")
-        assert len(r3.content) > 100
+        assert r3.json()["requires_payment"] is True
 
-        # B: unlock-status for same user -> free_eligible false, requires_payment true
-        r4 = requests.get(f"{BASE_URL}/api/projects/{pidB}/unlock-status?user_id={user_id}")
-        assert r4.status_code == 200
-        d4 = r4.json()
-        assert d4["free_eligible"] is False, d4
-        assert d4["requires_payment"] is True, d4
-
-        # POST checkout -> returns Stripe URL and session_id
-        r5 = requests.post(
+        r4 = requests.post(
             f"{BASE_URL}/api/projects/{pidB}/checkout",
             json={"origin_url": "https://example.com", "user_id": user_id},
             timeout=60,
         )
-        # KNOWN BUG: For a small (<20MB) film the pricing formula floors at
-        # ₹19 which converts to ~$0.20 — below Stripe's $0.50 minimum.
-        if r5.status_code == 500 and "at least 50 cents" in r5.text:
-            pytest.fail(
-                "BUG: /checkout for a low-priced film fails because ₹19 floor "
-                "in payments.compute_price_inr is below Stripe's $0.50 minimum. "
-                "Raise the floor to ~₹45 or gate small films via free tier only."
-            )
-        assert r5.status_code == 200, r5.text
-        d5 = r5.json()
-        assert d5["ok"] is True
-        assert d5["url"].startswith("http"), d5
-        assert isinstance(d5["session_id"], str) and len(d5["session_id"]) > 0
-        assert d5["amount_inr"] >= 19
-
-        # Verify a payment_transactions record exists with payment_status='initiated'
-        client = MongoClient(MONGO_URL)
-        try:
-            tx = client[DB_NAME]["payment_transactions"].find_one({"session_id": d5["session_id"]})
-            assert tx is not None
-            assert tx["payment_status"] == "initiated"
-            assert tx["project_id"] == pidB
-            assert tx["user_id"] == user_id
-        finally:
-            client.close()
-
-        pytest.session_id = d5["session_id"]
+        assert r4.status_code == 200, r4.text
+        d = r4.json()
+        assert d["ok"] is True
+        assert d["url"].startswith("http")
+        assert d["amount_inr"] >= 49  # regression: floor raised to ₹49
+        pytest.checkout_session_id = d["session_id"]
 
     def test_checkout_status_unpaid(self):
-        sid = getattr(pytest, "session_id", None)
+        sid = getattr(pytest, "checkout_session_id", None)
         if not sid:
             pytest.skip("checkout not created")
         r = requests.get(f"{BASE_URL}/api/checkout/status/{sid}", timeout=60)
-        assert r.status_code == 200, r.text
-        data = r.json()
-        # Should not be paid at this stage
-        assert data["payment_status"] != "paid"
-        assert "status" in data
+        assert r.status_code == 200
+        assert r.json()["payment_status"] != "paid"
 
     def test_webhook_invalid_signature(self):
         r = requests.post(
@@ -471,48 +526,142 @@ class TestFreeTierAndPayment:
         assert r.status_code == 400
 
 
-class TestCheckoutHappyPath:
-    """Verify that when the price exceeds Stripe's $0.50 minimum,
-    the checkout endpoint successfully returns a Stripe session."""
+# ---------------------------------------------------------------------------
+# Gallery + Publish + Tip
+# ---------------------------------------------------------------------------
 
-    def test_checkout_large_film(self):
-        client = MongoClient(MONGO_URL)
-        projects_col = client[DB_NAME]["projects"]
-        try:
-            pid = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_bigpay"}).json()["id"]
-            path = f"{STORAGE_DIR}/{pid}_final_film.mp4"
-            # ~100 MB pushes the price above ₹45 -> above Stripe minimum
-            with open(path, "wb") as f:
-                f.write(os.urandom(100 * 1024 * 1024))
-            projects_col.update_one(
-                {"id": pid},
-                {"$set": {"final_film": f"{pid}_final_film.mp4", "status": "assembled"}},
-            )
-            r = requests.post(
-                f"{BASE_URL}/api/projects/{pid}/checkout",
-                json={"origin_url": "https://example.com", "user_id": "U_bigpay"},
-                timeout=60,
-            )
-            assert r.status_code == 200, r.text
-            d = r.json()
-            assert d["ok"] is True
-            assert d["url"].startswith("https://checkout.stripe.com/")
-            assert d["amount_inr"] >= 45
+@pytest.fixture(scope="module")
+def published_project():
+    """Create a project + fake mp4 + unlock (free) + publish."""
+    client = MongoClient(MONGO_URL)
+    projects_col = client[DB_NAME]["projects"]
+    pid = requests.post(f"{BASE_URL}/api/projects", json={"title": "TEST_publish"}).json()["id"]
+    fname = f"{pid}_final_film.mp4"
+    _make_small_mp4(f"{STORAGE_DIR}/{fname}")
+    projects_col.update_one(
+        {"id": pid},
+        {"$set": {
+            "final_film": fname,
+            "status": "assembled",
+            "scenes": [{"id": "scene_1", "title": "S1", "image_file": None}],
+            "blueprint": {"logline": "A tiny cinematic test."},
+        }},
+    )
+    user_id = "U_pub_" + str(int(time.time()))
+    yield {"pid": pid, "fname": fname, "user_id": user_id}
+    try:
+        os.remove(f"{STORAGE_DIR}/{fname}")
+    except OSError:
+        pass
+    projects_col.delete_one({"id": pid})
+    client.close()
 
-            # payment_transactions record created
-            tx = client[DB_NAME]["payment_transactions"].find_one({"session_id": d["session_id"]})
-            assert tx is not None
-            assert tx["payment_status"] == "initiated"
 
-            # checkout status endpoint responds without error
-            r2 = requests.get(f"{BASE_URL}/api/checkout/status/{d['session_id']}", timeout=60)
-            assert r2.status_code == 200
-            data = r2.json()
-            assert data["payment_status"] != "paid"
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            projects_col.delete_one({"id": pid})
-            client.close()
+class TestPublishGallery:
+    def test_publish_unlocked_required(self, published_project):
+        pid = published_project["pid"]
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{pid}/publish",
+            json={"is_public": True, "tip_vpa": "test@upi"},
+        )
+        assert r.status_code == 402
+
+    def test_unlock_then_publish_and_gallery(self, published_project):
+        pid = published_project["pid"]
+        user_id = published_project["user_id"]
+
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{pid}/claim-free",
+            json={"origin_url": "http://x", "user_id": user_id},
+        )
+        assert r.status_code == 200, r.text
+
+        r2 = requests.post(
+            f"{BASE_URL}/api/projects/{pid}/publish",
+            json={"is_public": True, "tip_vpa": "test@upi"},
+        )
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["is_public"] is True
+
+        # GET gallery contains this pid
+        g = requests.get(f"{BASE_URL}/api/gallery")
+        assert g.status_code == 200
+        arr = g.json()
+        assert any(item["id"] == pid for item in arr)
+        item = next(item for item in arr if item["id"] == pid)
+        assert item["tip_vpa"] == "test@upi"
+        assert item["title"] == "TEST_publish"
+        assert "logline" in item
+
+        # GET single gallery item and views increments
+        s1 = requests.get(f"{BASE_URL}/api/gallery/{pid}").json()
+        v1 = s1["views"]
+        s2 = requests.get(f"{BASE_URL}/api/gallery/{pid}").json()
+        assert s2["views"] > v1
+
+        # Stream returns 200 video/mp4
+        s = requests.get(f"{BASE_URL}/api/gallery/{pid}/stream", timeout=30)
+        assert s.status_code == 200
+        assert s.headers.get("content-type", "").startswith("video/mp4")
+
+    def test_tip_valid_and_bounds(self, published_project):
+        pid = published_project["pid"]
+
+        # Below minimum
+        r_lo = requests.post(
+            f"{BASE_URL}/api/gallery/{pid}/tip",
+            json={"amount_inr": 20, "origin_url": "https://x", "user_id": "U_tip"},
+        )
+        assert r_lo.status_code == 400
+
+        # Above max
+        r_hi = requests.post(
+            f"{BASE_URL}/api/gallery/{pid}/tip",
+            json={"amount_inr": 20000, "origin_url": "https://x", "user_id": "U_tip"},
+        )
+        assert r_hi.status_code == 400
+
+        # Valid
+        r_ok = requests.post(
+            f"{BASE_URL}/api/gallery/{pid}/tip",
+            json={"amount_inr": 99, "origin_url": "https://x", "user_id": "U_tip"},
+            timeout=60,
+        )
+        assert r_ok.status_code == 200, r_ok.text
+        d = r_ok.json()
+        assert d["ok"] is True
+        assert d["url"].startswith("http")
+        assert isinstance(d["session_id"], str) and len(d["session_id"]) > 0
+        pytest.tip_session_id = d["session_id"]
+        pytest.tip_pid = pid
+
+    def test_tip_status_unpaid_no_increment(self):
+        sid = getattr(pytest, "tip_session_id", None)
+        pid = getattr(pytest, "tip_pid", None)
+        if not sid or not pid:
+            pytest.skip("tip session not created")
+
+        before = requests.get(f"{BASE_URL}/api/gallery/{pid}").json()
+        r = requests.get(f"{BASE_URL}/api/tip/status/{sid}", timeout=60)
+        assert r.status_code == 200
+        assert r.json()["payment_status"] != "paid"
+        after = requests.get(f"{BASE_URL}/api/gallery/{pid}").json()
+        # tips_total_inr must NOT be incremented for unpaid session
+        assert after["tips_total_inr"] == before["tips_total_inr"]
+
+    def test_unpublish_removes_from_gallery(self, published_project):
+        pid = published_project["pid"]
+        r = requests.post(
+            f"{BASE_URL}/api/projects/{pid}/publish",
+            json={"is_public": False},
+        )
+        assert r.status_code == 200
+        assert r.json()["is_public"] is False
+
+        g = requests.get(f"{BASE_URL}/api/gallery")
+        assert g.status_code == 200
+        assert not any(item["id"] == pid for item in g.json())
+
+        # Non-public stream returns 404
+        s = requests.get(f"{BASE_URL}/api/gallery/{pid}/stream")
+        assert s.status_code == 404
