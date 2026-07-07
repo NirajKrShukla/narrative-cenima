@@ -219,7 +219,7 @@ export default function Landing() {  return (
             <DemoTile
               testid="demo-ramayan"
               title="The First Sight · Ramayan"
-              caption="A copyright-safe reimagining — Prince Ramaditya beholds Princess Vaidehi in the gardens of Janakpuri."
+              caption="Lord Rama beholds Sita Mata in the gardens of Janakpuri. Original visual design, traditional names — respectful of the epic."
               src={`${process.env.REACT_APP_BACKEND_URL}/api/storage/demo_ramayan.mp4`}
             />
             <DemoTile

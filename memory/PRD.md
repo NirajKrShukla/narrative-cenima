@@ -234,3 +234,25 @@ All 3 videos: `readyState: 4`, `currentTime: 4.95s`, `paused: false`, `autoplay:
 - Workflow: 16.01s duration, playing WebM
 
 Zero JS console errors. Real content visible in every tile without any user interaction.
+
+## Update (2026-07-07 · Traditional names + cinematic Ramayan demo)
+### Fixed
+1. **Traditional character names restored** — Rama, Sita, Krishna, Shiva, Hanuman etc. are 3000+ year old mythological figures in the public domain. Updated the analyze system prompt (`STORY_SYSTEM_PROMPT` in ai_services.py) to instruct Claude to USE traditional names directly and only reinvent VISUAL DESIGNS to avoid infringing modern film/TV/comic depictions.
+2. **New cinematic Ramayan demo** (`gen_ramayan_cinematic.py`):
+   - Downloads 3 free-license Pexels images
+   - Ken-Burns zoom + drift motion per scene (6.5s each)
+   - Warm saffron/gold color grade + vignette + gold border
+   - Hindi Devanagari titles + English overlays (Lohit-Devanagari font)
+   - Cinematic beat lines top+bottom, English italic subtitles
+   - Concatenated with soft SRT via existing `assembly.concat_with_subs`
+   - Output: demo_ramayan.mp4 (2.5 MB) + demo_ramayan.webm (4.3 MB) + poster JPG
+
+### Verified in-browser
+All 3 tiles autoplaying: Ramayan @ 6.95s (Scene 1 → 2 transition visible), Showcase @ 6.95s, Workflow @ 6.95s ("03 CAST" step). Zero errors.
+
+### Awaiting: Real AI-generated Ramayan
+`gen_ramayan_demo.py` runs the full production pipeline (Nano Banana period-authentic character portraits + Hindi TTS + Ken-Burns + soft subs). Blocked ONLY by budget cap on the Emergent Universal Key ($1.07/$1.00). Once topped up:
+```
+python3 /app/backend/scripts/gen_ramayan_demo.py
+```
+overwrites the stock-imagery version with a fully AI-generated one.

@@ -360,7 +360,9 @@ async def gen_character_image(pid: str, cid: str):
         f"Character portrait, cinematic, {visual_style}. "
         f"ORIGINAL character design — {char.get('name')}, {char.get('archetype')}. "
         f"{char.get('description')} Full body or three-quarter shot on dramatic backdrop. "
-        f"No text, no logos, do not resemble any copyrighted franchise or real actor."
+        f"Period-authentic historical/archaeological references only. "
+        f"Do NOT resemble any specific film, TV show, comic, game, or real actor. "
+        f"No text, no logos, no watermarks."
     )
     fname = f"{pid}_char_{cid}.png"
     try:
