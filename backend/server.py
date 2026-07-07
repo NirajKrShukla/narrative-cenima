@@ -70,6 +70,12 @@ class GenerateVideoRequest(BaseModel):
 class GenerateNarrationRequest(BaseModel):
     voice: Optional[str] = None
     model: Optional[str] = None
+    language: Optional[str] = None       # override for this scene
+
+
+class SceneNarrationEdit(BaseModel):
+    narration: Optional[str] = None      # replace narration text directly
+    language: Optional[str] = None       # if provided (and narration not), translate existing narration to this language
 
 
 class ProjectSettings(BaseModel):
@@ -436,7 +442,31 @@ async def gen_scene_narration(pid: str, sid: str, body: GenerateNarrationRequest
     scene = next((s for s in doc.get("scenes") or [] if s.get("id") == sid), None)
     if not scene:
         raise HTTPException(404, "Scene not found")
-    text = scene.get("narration") or scene.get("description") or ""
+
+    original_text = scene.get("narration") or scene.get("description") or ""
+    # Determine target language: request > scene override > project default
+    target_lang = (body.language or scene.get("language") or doc.get("language_hint") or "").strip()
+
+    text = original_text
+    # If a language is requested and current narration wasn't already in it, translate.
+    if target_lang and target_lang.lower() not in ("auto", ""):
+        # Only translate if the scene's stored language differs from the target
+        if (scene.get("language") or "").lower() != target_lang.lower():
+            try:
+                translated = await ai_services.translate_narration(original_text, target_lang)
+                if translated and translated != original_text:
+                    text = translated
+                    # Persist translated narration + language on the scene for reuse
+                    await projects_col.update_one(
+                        {"id": pid, "scenes.id": sid},
+                        {"$set": {
+                            "scenes.$.narration": translated,
+                            "scenes.$.language": target_lang,
+                        }},
+                    )
+            except Exception as e:
+                logger.error(f"Translation failed, using original: {e}")
+
     fname = f"{pid}_scene_{sid}.mp3"
     voice = body.voice or doc.get("voice") or "onyx"
     model = body.model or doc.get("voice_model") or "tts-1"
@@ -448,7 +478,47 @@ async def gen_scene_narration(pid: str, sid: str, body: GenerateNarrationRequest
         {"id": pid, "scenes.id": sid},
         {"$set": {"scenes.$.audio_file": fname, "updated_at": now_iso()}},
     )
-    return {"ok": True, "audio_file": fname}
+    return {"ok": True, "audio_file": fname, "language": target_lang or None}
+
+
+@api.patch("/projects/{pid}/scenes/{sid}/narration")
+async def edit_scene_narration(pid: str, sid: str, body: SceneNarrationEdit):
+    """Edit narration text directly, or translate the existing narration into a target language."""
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    scene = next((s for s in doc.get("scenes") or [] if s.get("id") == sid), None)
+    if not scene:
+        raise HTTPException(404, "Scene not found")
+
+    new_text = None
+    new_lang = None
+    if body.narration is not None:
+        new_text = body.narration.strip()[:2000]
+        new_lang = body.language.strip()[:60] if body.language else scene.get("language")
+    elif body.language:
+        # Translate the current narration into the requested language
+        current = scene.get("narration") or scene.get("description") or ""
+        try:
+            translated = await ai_services.translate_narration(current, body.language)
+        except Exception as e:
+            raise HTTPException(500, f"Translation failed: {e}")
+        new_text = translated
+        new_lang = body.language.strip()[:60]
+    else:
+        raise HTTPException(400, "Provide `narration` (to set text) and/or `language` (to translate)")
+
+    updates = {
+        "scenes.$.narration": new_text,
+        "updated_at": now_iso(),
+    }
+    if new_lang is not None:
+        updates["scenes.$.language"] = new_lang
+    # Clear the old audio since text changed
+    updates["scenes.$.audio_file"] = None
+    updates["scenes.$.final_file"] = None
+    await projects_col.update_one({"id": pid, "scenes.id": sid}, {"$set": updates})
+    return {"ok": True, "narration": new_text, "language": new_lang}
 
 
 @api.post("/projects/{pid}/scenes/{sid}/mux")

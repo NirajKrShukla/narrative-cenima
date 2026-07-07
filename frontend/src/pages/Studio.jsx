@@ -683,12 +683,9 @@ const ScenesPanel = ({ project, onReload }) => {
               </div>
               <div className="lg:col-span-3">
                 <p className="text-sm text-white/70 leading-relaxed">{s.description}</p>
-                {s.narration && (
-                  <div className="mt-3 p-3 rounded border border-white/5 bg-black/40">
-                    <div className="overline mb-1">Narration</div>
-                    <p className="text-sm italic text-white/80">&ldquo;{s.narration}&rdquo;</p>
-                  </div>
-                )}
+
+                <SceneNarrationEditor scene={s} projectId={project.id} onReload={onReload} />
+
                 {s.camera && <div className="mt-2 text-xs text-white/50">Camera · {s.camera}</div>}
 
                 <div className="mt-4 flex flex-wrap gap-2">
@@ -719,7 +716,7 @@ const ScenesPanel = ({ project, onReload }) => {
                   </button>
                   <button
                     className="btn-ghost text-xs"
-                    onClick={() => action(s.id, "nar", `/projects/${project.id}/scenes/${s.id}/narration`, { body: { voice: "onyx", model: "tts-1" }, msg: "Narration generated" })}
+                    onClick={() => action(s.id, "nar", `/projects/${project.id}/scenes/${s.id}/narration`, { msg: "Narration generated" })}
                     disabled={busy[`${s.id}_nar`]}
                     data-testid={`scene-narration-${s.id}`}
                   >
@@ -1496,18 +1493,7 @@ const BatchPanel = ({ project, onReload }) => {
 
           {batch && (batch.running || batch.total > 0) && (
             <div className="mt-6" data-testid="batch-progress">
-              <div className="flex items-center justify-between text-sm mb-2">
-                <span className="text-white/60">
-                  {batch.running ? "Working on" : "Finished"} · <span className="text-gold font-mono">{batch.current || "—"}</span>
-                </span>
-                <span className="font-mono text-xs text-white/50">{batch.completed} / {batch.total}</span>
-              </div>
-              <div className="h-2 rounded-full bg-white/5 overflow-hidden">
-                <div
-                  className="h-full bg-gold transition-all duration-500"
-                  style={{ width: `${percent}%` }}
-                />
-              </div>
+              <BatchProgressCard batch={batch} project={project} percent={percent} />
               {batch.errors && batch.errors.length > 0 && (
                 <div className="mt-4 rounded border border-red-500/20 bg-red-500/5 p-3">
                   <div className="flex items-center gap-2 text-red-300 text-xs mb-2">
@@ -1539,3 +1525,258 @@ const BatchPanel = ({ project, onReload }) => {
     </div>
   );
 };
+
+
+// ---------- Per-scene narration editor with language override ----------
+const SceneNarrationEditor = ({ scene, projectId, onReload }) => {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState(scene.narration || "");
+  const [lang, setLang] = useState(scene.language || "auto");
+  const [saving, setSaving] = useState(false);
+  const [translating, setTranslating] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await API.patch(`/projects/${projectId}/scenes/${scene.id}/narration`, {
+        narration: text, language: lang !== "auto" ? lang : undefined,
+      });
+      toast.success("Narration updated");
+      setOpen(false);
+      await onReload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Save failed");
+    } finally { setSaving(false); }
+  };
+
+  const translate = async () => {
+    if (!lang || lang === "auto") {
+      toast.error("Pick a target language first");
+      return;
+    }
+    setTranslating(true);
+    try {
+      const { data } = await API.patch(`/projects/${projectId}/scenes/${scene.id}/narration`, {
+        language: lang,
+      });
+      setText(data.narration || "");
+      toast.success(`Translated to ${lang}`);
+      await onReload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Translation failed");
+    } finally { setTranslating(false); }
+  };
+
+  const currentLangLabel = LANGUAGES.find((l) => l.id === (scene.language || "auto"))?.label || (scene.language || "Auto");
+
+  return (
+    <div className="mt-3 p-3 rounded border border-white/5 bg-black/40">
+      <div className="flex items-center justify-between mb-2 gap-3">
+        <div className="flex items-center gap-2">
+          <span className="overline">Narration</span>
+          {scene.language && scene.language !== "auto" && (
+            <Pill tone="gold">{currentLangLabel.split(" ")[0]}</Pill>
+          )}
+        </div>
+        <button
+          className="text-[11px] text-white/50 hover:text-gold transition"
+          onClick={() => setOpen((v) => !v)}
+          data-testid={`narration-edit-${scene.id}`}
+        >
+          {open ? "Cancel" : "Edit / translate"}
+        </button>
+      </div>
+
+      {!open ? (
+        <p className="text-sm italic text-white/80" data-testid={`narration-text-${scene.id}`}>
+          &ldquo;{scene.narration}&rdquo;
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <textarea
+            className="textarea-field text-sm min-h-[100px]"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            data-testid={`narration-textarea-${scene.id}`}
+          />
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
+            <div>
+              <label className="overline">Scene narration language (overrides project default)</label>
+              <select
+                className="input-field mt-1"
+                value={lang}
+                onChange={(e) => setLang(e.target.value)}
+                data-testid={`narration-lang-${scene.id}`}
+              >
+                {(() => {
+                  const groups = {};
+                  LANGUAGES.forEach((l) => {
+                    const g = l.region || "General";
+                    (groups[g] = groups[g] || []).push(l);
+                  });
+                  const order = ["", "General", "South Asia", "Europe & Global", "Europe", "East Asia", "SE Asia", "Middle East", "Caucasus", "Central Asia", "Asia", "Africa", "Americas", "Pacific"];
+                  const keys = Object.keys(groups).sort(
+                    (a, b) => (order.indexOf(a) + 100) - (order.indexOf(b) + 100)
+                  );
+                  return keys.map((k) => (
+                    <optgroup key={k} label={k || "General"}>
+                      {groups[k].map((l) => (
+                        <option key={l.id} value={l.id}>{l.label}</option>
+                      ))}
+                    </optgroup>
+                  ));
+                })()}
+              </select>
+            </div>
+            <button className="btn-ghost text-xs" onClick={translate} disabled={translating} data-testid={`narration-translate-${scene.id}`}>
+              {translating ? <Spinner /> : <Globe className="w-3.5 h-3.5" />} Translate
+            </button>
+            <button className="btn-gold text-xs" onClick={save} disabled={saving} data-testid={`narration-save-${scene.id}`}>
+              {saving ? <Spinner /> : <Check className="w-3.5 h-3.5" />} Save
+            </button>
+          </div>
+          <p className="text-[11px] text-white/40">
+            After saving or translating, regenerate the narration audio (Narration button below) to hear the change.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ---------- Improved Batch Progress Card ----------
+const STEP_ICONS = {
+  image: ImageIcon,
+  narration: Volume2,
+  video: Video,
+  mux: Sparkles,
+  assembling: Film,
+  starting: Loader2,
+  queued: Loader2,
+  done: Check,
+};
+
+const STEP_LABEL = {
+  image: "Painting storyboard",
+  narration: "Voicing narration",
+  video: "Animating scene",
+  mux: "Adding audio + subtitles",
+  assembling: "Assembling final film",
+  starting: "Warming up",
+  queued: "Queued",
+  done: "Finished",
+};
+
+const formatElapsed = (startedAt) => {
+  if (!startedAt) return "";
+  const s = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+};
+
+const BatchProgressCard = ({ batch, project, percent }) => {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!batch?.running) return;
+    const t = setInterval(() => setTick((v) => v + 1), 1000);
+    return () => clearInterval(t);
+  }, [batch?.running]);
+
+  const scenes = project.scenes || [];
+  // Parse batch.current like "scene_1:image" -> { sid, step }
+  const parseCurrent = (cur) => {
+    if (!cur || cur.indexOf(":") < 0) return { sid: null, step: cur };
+    const [sid, step] = cur.split(":");
+    return { sid, step };
+  };
+  const { sid: curSid, step: curStep } = parseCurrent(batch.current);
+  const curScene = scenes.find((s) => s.id === curSid);
+  const StepIcon = STEP_ICONS[curStep] || Sparkles;
+  const stepLabel = STEP_LABEL[curStep] || curStep || "Processing";
+
+  const elapsed = formatElapsed(batch.started_at);
+
+  return (
+    <div>
+      {/* Top status */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="overline flex items-center gap-2">
+            {batch.running ? <span className="w-2 h-2 rounded-full bg-gold animate-pulse" /> : <Check className="w-3 h-3 text-gold" />}
+            {batch.running ? "Auto-Pilot running" : "Auto-Pilot finished"}
+          </div>
+          <div className="mt-2 flex items-center gap-3">
+            <StepIcon className={`w-5 h-5 text-gold ${batch.running ? "animate-pulse" : ""}`} />
+            <div>
+              <div className="font-display text-lg">{stepLabel}</div>
+              {curScene && (
+                <div className="text-xs text-white/50 mt-0.5">
+                  Scene {scenes.findIndex((s) => s.id === curSid) + 1} · {curScene.title}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="font-mono text-2xl text-gold">{percent}%</div>
+          <div className="text-[11px] text-white/40 uppercase tracking-widest">
+            {batch.completed} / {batch.total} steps · {elapsed}
+          </div>
+        </div>
+      </div>
+
+      {/* Bar */}
+      <div className="h-2 rounded-full bg-white/5 overflow-hidden mt-4">
+        <motion.div
+          className="h-full bg-gradient-to-r from-gold to-yellow-300"
+          initial={{ width: 0 }}
+          animate={{ width: `${percent}%` }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+        />
+      </div>
+
+      {/* Per-scene grid */}
+      <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2" data-testid="batch-scene-grid">
+        {scenes.map((s, idx) => {
+          const isCurrent = s.id === curSid;
+          const done = {
+            image: !!s.image_file,
+            video: !!s.video_file,
+            audio: !!s.audio_file,
+            final: !!s.final_file,
+          };
+          const allDone = done.image && done.video && done.audio;
+          return (
+            <div
+              key={s.id}
+              className={`p-2 rounded-md border text-[10px] font-mono transition ${
+                isCurrent && batch.running
+                  ? "border-gold/60 bg-gold/10 shadow-goldGlow"
+                  : allDone
+                    ? "border-white/10 bg-black/40"
+                    : "border-white/5 bg-black/30"
+              }`}
+              title={s.title}
+              data-testid={`batch-scene-${s.id}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-gold">{String(idx + 1).padStart(2, "0")}</span>
+                {isCurrent && batch.running && <Loader2 className="w-3 h-3 animate-spin text-gold" />}
+                {!isCurrent && allDone && <Check className="w-3 h-3 text-gold" />}
+              </div>
+              <div className="mt-1 text-white/70 truncate">{s.title}</div>
+              <div className="mt-1.5 flex gap-1">
+                <span className={`w-1.5 h-1.5 rounded-full ${done.image ? "bg-gold" : "bg-white/15"}`} title="image" />
+                <span className={`w-1.5 h-1.5 rounded-full ${done.audio ? "bg-gold" : "bg-white/15"}`} title="audio" />
+                <span className={`w-1.5 h-1.5 rounded-full ${done.video ? "bg-gold" : "bg-white/15"}`} title="video" />
+                <span className={`w-1.5 h-1.5 rounded-full ${done.final ? "bg-gold" : "bg-white/15"}`} title="final" />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+

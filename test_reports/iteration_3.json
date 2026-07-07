@@ -1,0 +1,37 @@
+{
+  "summary": "iteration_3 backend validation: universal narration-language support, per-scene PATCH edit/translate, and Claude-Haiku translation helper. Added new test file test_language_features.py with 22 tests + re-ran 22 regression tests from test_backend.py (skipping the expensive Claude Sonnet analyze + Gemini/TTS batch classes covered fully in iteration_2). All 44 executed tests passed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "ENV/CI", "issue": "ffmpeg binary was missing from the image at test-start (previous iteration had it). Installed via apt-get install ffmpeg for tests to run — main agent may want to add ffmpeg to Docker/base image to prevent regression."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_language_features.py",
+    "/app/backend/tests/test_backend.py",
+    "/app/test_reports/pytest/iteration_3_language.xml",
+    "/app/test_reports/pytest/iteration_3_regression.xml"
+  ],
+  "action_items": [
+    "Ensure ffmpeg is baked into the deployment image (was missing this run).",
+    "Minor: server.py voice/voice_model validation ignores unknown fields silently — consider Pydantic extra='forbid' on ProjectSettings (nice-to-have).",
+    "Minor: PATCH /scenes/{sid}/narration truncates narration text to 2000 chars silently — consider adding a 413 or returning a warning when body.narration > 2000."
+  ],
+  "critical_code_review_comments": [
+    "translate_narration correctly guards on empty text / 'auto' language and falls back to original text on LLM refusal-style output — matches spec.",
+    "POST /projects/{pid}/scenes/{sid}/narration priority chain (body.language > scene.language > project.language_hint) is implemented correctly; translation is persisted so subsequent calls don't re-spend.",
+    "PATCH /projects/{pid}/scenes/{sid}/narration properly clears audio_file/final_file when narration text changes — verified.",
+    "settings language_hint accepts arbitrary strings (Swahili/Zulu/Yoruba/zh/Māori) and empty string collapses to 'auto' as specified.",
+    "ingest_file uses Form(...) for language, ingest_voice routes full names via ingestion.iso_code_for_language() to Whisper — both correct.",
+    "Iso map covers 97+ languages including Cantonese, Māori, Yoruba, Swahili, Zulu — matches feature spec."
+  ],
+  "updated_files": ["/app/backend/tests/test_language_features.py"],
+  "success_rate": {"backend": "100% (44/44 executed)", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "not applicable — no auth in this app",
+  "seed_data_creation": "Direct mongo writes seed a single scene with narration 'The warrior stepped into the ancient forest...' for translation tests; ffmpeg generates small mp4 fixtures for paywall/gallery classes. All test docs are prefixed TEST_ for cleanup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_backend.py contains 30 iteration_2 tests. Full run also includes TestAsyncAnalyze (Claude Sonnet), TestNarrationDefaults (TTS) and TestBatch (Gemini image + TTS + Ken-Burns) which are credit-heavy and were skipped this iteration since they were fully verified in iteration_2. If any changes touch ingestion/analyze/assembly, re-run those classes explicitly. New file test_language_features.py exercises the language pipeline end-to-end with only 2 real Claude-Haiku calls (translate + on-the-fly narration override) and 1 real TTS call. ffmpeg was installed at runtime — verify it's in the base image before next run.",
+  "rca of the issue": "N/A — no bugs found this iteration."
+}

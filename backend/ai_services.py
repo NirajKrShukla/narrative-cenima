@@ -183,3 +183,31 @@ async def generate_narration(text: str, out_name: str, voice: str = "onyx", mode
     out_path = STORAGE_DIR / out_name
     out_path.write_bytes(audio_bytes)
     return out_name
+
+
+async def translate_narration(text: str, target_language: str) -> str:
+    """Translate/rewrite a narration line into a target language.
+    Uses Claude Haiku for speed; preserves cinematic tone and native script."""
+    if not text or not target_language or target_language.lower() in ("auto", ""):
+        return text
+    chat = LlmChat(
+        api_key=_api_key(),
+        session_id=f"tr-{uuid.uuid4().hex[:8]}",
+        system_message=(
+            "You are an expert cinematic translator. Rewrite the given narrator voice-over line "
+            "into the requested target language using its NATIVE SCRIPT (e.g. Devanagari for Hindi, "
+            "Arabic for Arabic, Chinese characters for Mandarin, Cyrillic for Russian). "
+            "Preserve the poetic and dramatic tone. Keep it under 380 characters. "
+            "Return ONLY the translated line — no quotes, no notes, no markdown."
+        ),
+    ).with_model("anthropic", "claude-haiku-4-5")
+
+    prompt = f"Target language: **{target_language}**\n\nNarration to translate:\n{text.strip()[:2000]}"
+    msg = UserMessage(text=prompt)
+    response = await chat.send_message(msg)
+    out = response if isinstance(response, str) else str(response)
+    out = out.strip().strip('"').strip("'")
+    # Guard: if it's obviously an error message or too long, fall back to original
+    if not out or out.lower().startswith(("i cannot", "i can't", "as an ai")):
+        return text
+    return out[:400]
