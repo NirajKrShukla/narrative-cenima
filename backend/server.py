@@ -302,6 +302,10 @@ async def _analyze_task(pid: str, source_text: str, language_hint: str):
 
     characters = blueprint.get("characters") or []
     scenes = blueprint.get("scenes") or []
+    # Ensure every character has a unique TTS voice (repair if LLM missed any)
+    narrator_voice = blueprint.get("narrator_voice") or "fable"
+    characters, narrator_voice = ai_services.assign_unique_voices(characters, narrator_voice)
+    blueprint["narrator_voice"] = narrator_voice
     for i, c in enumerate(characters):
         c["id"] = c.get("id") or f"char_{i+1}"
         c["image_file"] = None
@@ -311,6 +315,9 @@ async def _analyze_task(pid: str, source_text: str, language_hint: str):
         s["video_file"] = None
         s["audio_file"] = None
         s["final_file"] = None
+        # Ensure dialogue_lines is a list (may be missing on older blueprints)
+        if not isinstance(s.get("dialogue_lines"), list):
+            s["dialogue_lines"] = []
 
     await projects_col.update_one(
         {"id": pid},
@@ -491,10 +498,45 @@ async def gen_scene_narration(pid: str, sid: str, body: GenerateNarrationRequest
     fname = f"{pid}_scene_{sid}.mp3"
     voice = body.voice or scene.get("voice") or doc.get("voice") or "onyx"
     model = body.model or scene.get("voice_model") or doc.get("voice_model") or "tts-1"
-    try:
-        await ai_services.generate_narration(text, fname, voice=voice, model=model)
-    except Exception as e:
-        raise HTTPException(500, f"TTS failed: {e}")
+
+    # ---- Multi-voice per character ----
+    # If the scene has dialogue_lines with a speaker breakdown, generate audio per line
+    # in each speaker's own voice, then concat. This is the default new behavior.
+    dialogue_lines = scene.get("dialogue_lines") or []
+    characters = doc.get("characters") or []
+    narrator_voice = (
+        (doc.get("blueprint") or {}).get("narrator_voice")
+        or doc.get("voice")
+        or "fable"
+    )
+    used_multivoice = False
+    if isinstance(dialogue_lines, list) and any((ln or {}).get("text") for ln in dialogue_lines):
+        # If a language override was applied, translate each line into the target language
+        if target_lang and target_lang.lower() not in ("auto", ""):
+            translated_lines = []
+            for ln in dialogue_lines:
+                t = (ln.get("text") or "").strip()
+                if not t:
+                    continue
+                try:
+                    tr = await ai_services.translate_narration(t, target_lang)
+                    translated_lines.append({"speaker": ln.get("speaker") or "narrator", "text": tr or t})
+                except Exception:
+                    translated_lines.append({"speaker": ln.get("speaker") or "narrator", "text": t})
+            dialogue_lines = translated_lines
+        try:
+            await ai_services.generate_scene_audio_multivoice(
+                dialogue_lines, characters, narrator_voice, fname, model=model,
+            )
+            used_multivoice = True
+        except Exception as e:
+            logger.error(f"Multi-voice audio failed, falling back to single voice: {e}")
+
+    if not used_multivoice:
+        try:
+            await ai_services.generate_narration(text, fname, voice=voice, model=model)
+        except Exception as e:
+            raise HTTPException(500, f"TTS failed: {e}")
     await projects_col.update_one(
         {"id": pid, "scenes.id": sid},
         {"$set": {"scenes.$.audio_file": fname, "updated_at": now_iso()}},
@@ -720,7 +762,23 @@ async def _batch_worker(pid: str, mode: str, video_type: str, duration: int, siz
                     fname = f"{pid}_scene_{sid}.mp3"
                     voice = doc.get("voice") or "onyx"
                     v_model = doc.get("voice_model") or "tts-1"
-                    await ai_services.generate_narration(text, fname, voice=voice, model=v_model)
+                    dialogue_lines = scene.get("dialogue_lines") or []
+                    characters = doc.get("characters") or []
+                    narrator_voice = (
+                        (doc.get("blueprint") or {}).get("narrator_voice")
+                        or voice
+                        or "fable"
+                    )
+                    if isinstance(dialogue_lines, list) and any((ln or {}).get("text") for ln in dialogue_lines):
+                        try:
+                            await ai_services.generate_scene_audio_multivoice(
+                                dialogue_lines, characters, narrator_voice, fname, model=v_model,
+                            )
+                        except Exception as e:
+                            logger.error(f"Batch multi-voice failed for {sid}, falling back: {e}")
+                            await ai_services.generate_narration(text, fname, voice=voice, model=v_model)
+                    else:
+                        await ai_services.generate_narration(text, fname, voice=voice, model=v_model)
                     await projects_col.update_one(
                         {"id": pid, "scenes.id": sid},
                         {"$set": {"scenes.$.audio_file": fname}},
@@ -922,6 +980,12 @@ async def _dub_worker(pid: str, languages: list[str], voice_override: Optional[s
 
     default_voice = voice_override or doc.get("voice") or "onyx"
     default_model = doc.get("voice_model") or "tts-1"
+    dub_characters = doc.get("characters") or []
+    dub_narrator_voice = (
+        (doc.get("blueprint") or {}).get("narrator_voice")
+        or default_voice
+        or "fable"
+    )
 
     all_results = []
     for lang in languages:
@@ -951,13 +1015,42 @@ async def _dub_worker(pid: str, languages: list[str], voice_override: Optional[s
                     {"$set": {"dub_job.current": f"{lang}:{sid}:tts"}},
                 )
                 tts_name = f"{pid}_dub_{safe_lang}_scene_{sid}.mp3"
-                try:
-                    await ai_services.generate_narration(
-                        translated, tts_name, voice=default_voice, model=default_model,
-                    )
-                except Exception as e:
-                    errors.append(f"{lang}:{sid}:tts: {str(e)[:120]}")
-                    tts_name = None
+                dialogue_lines = scene.get("dialogue_lines") or []
+                tts_ok = False
+                if isinstance(dialogue_lines, list) and any((ln or {}).get("text") for ln in dialogue_lines):
+                    # Translate each dialogue line into the target language and re-speak
+                    # in each speaker's own voice
+                    try:
+                        translated_lines = []
+                        for ln in dialogue_lines:
+                            t = (ln.get("text") or "").strip()
+                            if not t:
+                                continue
+                            try:
+                                tr = await ai_services.translate_narration(t, lang)
+                            except Exception:
+                                tr = t
+                            translated_lines.append({
+                                "speaker": ln.get("speaker") or "narrator",
+                                "text": tr or t,
+                            })
+                        if translated_lines:
+                            await ai_services.generate_scene_audio_multivoice(
+                                translated_lines, dub_characters, dub_narrator_voice,
+                                tts_name, model=default_model,
+                            )
+                            tts_ok = True
+                    except Exception as e:
+                        errors.append(f"{lang}:{sid}:tts-multi: {str(e)[:120]}")
+
+                if not tts_ok:
+                    try:
+                        await ai_services.generate_narration(
+                            translated, tts_name, voice=default_voice, model=default_model,
+                        )
+                    except Exception as e:
+                        errors.append(f"{lang}:{sid}:tts: {str(e)[:120]}")
+                        tts_name = None
                 completed += 1
                 await projects_col.update_one({"id": pid}, {"$set": {"dub_job.completed": completed}})
 

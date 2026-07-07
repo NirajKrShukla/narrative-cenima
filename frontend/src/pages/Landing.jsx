@@ -209,18 +209,25 @@ export default function Landing() {  return (
             <Play className="w-3.5 h-3.5 text-gold" /> See it in action
           </div>
           <h2 className="font-display text-4xl sm:text-5xl tracking-tight max-w-3xl leading-tight">
-            Three short demos — <span className="text-gold">Ramayan, the mood, the process</span>.
+            Four short demos — <span className="text-gold">epic, folk, cartoon, cinematic</span>.
           </h2>
           <p className="text-white/60 mt-4 max-w-2xl">
-            Each is under 25 seconds. Plays silently on any device — tap for sound and fullscreen.
+            Each is under 30 seconds. Plays silently on any device — tap for sound and fullscreen.
+            <span className="text-gold"> Every character speaks in their own unique voice.</span>
           </p>
 
-          <div className="mt-14 grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="mt-14 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             <DemoTile
               testid="demo-ramayan"
               title="The First Sight · Ramayan"
               caption="Lord Rama beholds Sita Mata in the gardens of Janakpuri. Original visual design, traditional names — respectful of the epic."
               src={`${process.env.REACT_APP_BACKEND_URL}/api/storage/demo_ramayan.mp4`}
+            />
+            <DemoTile
+              testid="demo-chandrakanta"
+              title="Chandrakanta · Cartoon"
+              caption="Princess Chandrakanta of Vijaygarh and Prince Virendra Singh of Naugarh — aiyar spies, tilism traps, and a love that crosses two kingdoms. Freshly drawn cartoon, four unique voices."
+              src={`${process.env.REACT_APP_BACKEND_URL}/api/storage/demo_chandrakanta.mp4`}
             />
             <DemoTile
               testid="demo-showcase"

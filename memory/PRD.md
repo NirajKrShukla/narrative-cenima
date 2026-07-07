@@ -270,3 +270,39 @@ Playing at t=8.45s showing Sita Mata in emerald sari with companions in Janakpur
 
 ### Traditional names on-screen
 Character names in the narration Hindi: "प्रभु राम" (Lord Rama), "माता सीता" (Mother Sita), "लक्ष्मण" (Lakshmana) — public-domain traditional names. Visual designs are original Nano Banana renderings (period-authentic silks, jewelry, palace architecture) — no infringement of any modern film/TV/comic depiction.
+
+
+## Update (2026-07-07 · Chandrakanta cartoon demo + per-character voices)
+
+### Feature: Every character speaks in their own voice
+Added a universal rule across all films — each character gets a **unique OpenAI TTS voice** from the pool `[onyx, nova, alloy, echo, fable, shimmer, ash, coral, sage]`, and the narrator gets a separate voice.
+
+- `ai_services.STORY_SYSTEM_PROMPT` — extended so Claude assigns:
+  - `characters[].voice` — unique per character
+  - `scenes[].dialogue_lines` — `[{speaker: "narrator"|char_id, text}, ...]`
+  - `narrator_voice` — top-level field
+- `ai_services.assign_unique_voices(...)` — post-analyze fallback that repairs any missing/duplicate voices deterministically.
+- `ai_services.generate_scene_audio_multivoice(...)` — generates a separate mp3 per dialogue line in each speaker's own voice, then concats with `assembly.concat_audio_files()`.
+- `server._analyze_task` now calls `assign_unique_voices` and normalizes `dialogue_lines` on every scene.
+- `server.gen_scene_narration`, batch worker, and dub worker all use `generate_scene_audio_multivoice` when dialogue_lines exist, falling back to the legacy single-voice narration otherwise. Multi-voice is applied for **dubs** too — every language track keeps distinct per-character voices.
+- `assembly.concat_audio_files(list, out)` — ffmpeg concat-demuxer helper for mp3s.
+
+### New homepage demo: Chandrakanta of Vijaygarh (cartoon)
+- Public-domain folk romance (Devaki Nandan Khatri, 1888): Princess Chandrakanta of Vijaygarh + Prince Virendra Singh of Naugarh, aiyar spies, tilism traps.
+- Freshly-invented cartoon character designs (flat 2D, folk-poster palette). NOT derived from any prior TV/film/comic adaptation.
+- 4 scenes × 3 dialogue lines each = 12 individual TTS clips concat'd per scene.
+- 4 distinct voices in the film: **fable** (narrator), **coral** (Chandrakanta), **onyx** (Virendra), **ash** (aiyar Tejsingh).
+- Script: `/app/backend/scripts/gen_chandrakanta_demo.py`
+- Output: `demo_chandrakanta.mp4` (4.3 MB, 59 s) + `.webm` + `.srt` + `_poster.jpg`.
+- Landing page updated to a 4-tile demo grid (Ramayan, Chandrakanta, Showreel, Workflow).
+
+### Verified
+- Backend tests: **52 / 52 passing**.
+- HTTP Range: `Range: bytes=0-100000` → `206 Partial Content` ✓
+- Screenshot: Tile visible, `<video>` reports `readyState=4, duration=59.047, error=null`.
+
+## Backlog / Next
+- P1: User to click **"Save to Github"** in the chat input to push the repo (agents cannot perform git writes).
+- P2: Optional: batch-render Krishna-Sudama / Hanuman-Ocean / Shiva-Parvati gallery entries using the same multi-voice pipeline.
+- P3: Real Instagram/YouTube OAuth uploads (deferred — needs 4-8 week app verification).
+- P3: Refactor `Studio.jsx` (~1900 lines) into `/components` folder.

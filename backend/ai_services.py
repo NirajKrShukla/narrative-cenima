@@ -33,6 +33,12 @@ CRITICAL COPYRIGHT & SAFETY RULES:
 - Avoid depicting real living people (actors, celebrities, politicians).
 - Never generate sexual, gore, or hateful content. Keep it PG-13.
 
+VOICE ASSIGNMENT (VERY IMPORTANT):
+- Every character MUST have a **unique** `voice` from this pool of OpenAI TTS voices:
+  ["onyx", "nova", "alloy", "echo", "fable", "shimmer", "ash", "coral", "sage"]
+- Voice guidance: onyx = deep authoritative male; ash = warm mature male; echo = calm male; fable = British storyteller; sage = wise elder male; nova = warm young female; shimmer = bright female; coral = sultry female; alloy = neutral/androgynous.
+- Pick voices that suit each character's gender/age/personality. NEVER reuse the same voice for two characters in the same film. A separate "narrator" voice (not in the characters list) will speak descriptive narration; you MAY reserve `onyx` or `fable` for narrator if you use it for the narrator only.
+
 You will return ONLY valid JSON, no markdown, no commentary. Structure:
 {
   "title": "string",
@@ -40,6 +46,7 @@ You will return ONLY valid JSON, no markdown, no commentary. Structure:
   "genre": "string",
   "tone": "string",
   "visual_style": "one-line cinematic style spec (lighting, palette, camera language)",
+  "narrator_voice": "one of the OpenAI TTS voices reserved for the omniscient narrator (e.g. 'fable' or 'onyx'). Must differ from every character voice.",
   "characters": [
     {
       "id": "char_1",
@@ -47,7 +54,8 @@ You will return ONLY valid JSON, no markdown, no commentary. Structure:
       "archetype": "e.g. warrior king, wise sage",
       "traditional_alias": "leave empty if `name` is already the traditional name",
       "description": "One paragraph ORIGINAL physical + costume description. Reference period-authentic clothing, jewelry, weaponry — but do NOT copy any known film/TV/comic depiction. Include age, build, skin, hair, attire, distinct props.",
-      "personality": "short"
+      "personality": "short",
+      "voice": "ONE of onyx/nova/alloy/echo/fable/shimmer/ash/coral/sage — unique per character"
     }
   ],
   "scenes": [
@@ -57,7 +65,10 @@ You will return ONLY valid JSON, no markdown, no commentary. Structure:
       "location": "where",
       "time_of_day": "dawn/day/dusk/night",
       "description": "3-5 sentences describing the beat visually",
-      "narration": "1-3 sentences of narrator voiceover (in the same language as user's input if that language is not English, else English). Keep under 380 characters.",
+      "narration": "1-3 sentences of narrator voiceover (in the same language as user's input if that language is not English, else English). Keep under 380 characters. This is the omniscient narrator, spoken in `narrator_voice`.",
+      "dialogue_lines": [
+         { "speaker": "narrator | char_1 | char_2 | ...", "text": "the exact spoken line in the story's language" }
+      ],
       "characters": ["char_1"],
       "camera": "e.g. slow dolly in, wide establishing, overhead",
       "mood": "e.g. mysterious, triumphant",
@@ -66,6 +77,13 @@ You will return ONLY valid JSON, no markdown, no commentary. Structure:
     }
   ]
 }
+
+DIALOGUE_LINES RULES:
+- Every scene MUST include a `dialogue_lines` array with 1 to 4 entries.
+- First entry is usually the narrator setting the scene, followed by character lines when characters are on screen.
+- Speaker MUST be exactly "narrator" or one of the character IDs (`char_1`, `char_2`…).
+- Each `text` is what will be spoken aloud — write it in the story's language (native script).
+- Keep the total spoken duration per scene under ~15 seconds — brevity is cinematic.
 
 Aim for 4-8 scenes for a short film. Keep character count 2-5.
 """
@@ -207,3 +225,77 @@ async def translate_narration(text: str, target_language: str) -> str:
     if not out or out.lower().startswith(("i cannot", "i can't", "as an ai")):
         return text
     return out[:400]
+
+
+
+# ---- Per-character voice assignment ----------------------------------------
+ALLOWED_TTS_VOICES = ["onyx", "nova", "alloy", "echo", "fable", "shimmer", "ash", "coral", "sage"]
+
+
+def assign_unique_voices(characters: list[dict], narrator_voice: Optional[str] = None) -> tuple[list[dict], str]:
+    """Ensure every character has a unique `voice` from ALLOWED_TTS_VOICES.
+    Returns (characters, narrator_voice). Any missing/duplicate voice is auto-repaired
+    so **every character speaks with its own distinct voice**.
+    """
+    used: set[str] = set()
+    # Reserve narrator first (default: fable — the British storyteller)
+    nv = (narrator_voice or "fable").strip().lower()
+    if nv not in ALLOWED_TTS_VOICES:
+        nv = "fable"
+    used.add(nv)
+
+    for i, ch in enumerate(characters or []):
+        v = (ch.get("voice") or "").strip().lower()
+        if v not in ALLOWED_TTS_VOICES or v in used:
+            # Pick the next free voice from the pool
+            v = next((x for x in ALLOWED_TTS_VOICES if x not in used), None)
+            if not v:
+                # More than 9 characters — cycle back but at least differ from narrator
+                v = ALLOWED_TTS_VOICES[i % len(ALLOWED_TTS_VOICES)]
+                if v == nv:
+                    v = ALLOWED_TTS_VOICES[(i + 1) % len(ALLOWED_TTS_VOICES)]
+        ch["voice"] = v
+        used.add(v)
+    return characters, nv
+
+
+async def generate_scene_audio_multivoice(
+    dialogue_lines: list[dict],
+    characters: list[dict],
+    narrator_voice: str,
+    out_name: str,
+    model: str = "tts-1",
+) -> str:
+    """Generate a single scene audio track where each dialogue line is spoken by its speaker's voice.
+    `dialogue_lines`: [{speaker: "narrator"|char_id, text: "..."}]
+    Returns the storage-relative filename of the concatenated mp3.
+    """
+    import assembly  # local import to avoid cycle at module load
+    if not dialogue_lines:
+        raise RuntimeError("No dialogue lines provided")
+
+    voice_by_id = {(c.get("id") or "").strip(): (c.get("voice") or "").strip().lower()
+                   for c in (characters or [])}
+
+    part_files: list[str] = []
+    base = out_name.rsplit(".", 1)[0]
+    for idx, line in enumerate(dialogue_lines):
+        text = (line.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = (line.get("speaker") or "narrator").strip()
+        if speaker == "narrator":
+            v = narrator_voice or "fable"
+        else:
+            v = voice_by_id.get(speaker) or narrator_voice or "onyx"
+        if v not in ALLOWED_TTS_VOICES:
+            v = "onyx"
+        part_name = f"{base}_part{idx+1}_{v}.mp3"
+        await generate_narration(text, part_name, voice=v, model=model)
+        part_files.append(part_name)
+
+    if not part_files:
+        raise RuntimeError("All dialogue lines were empty")
+
+    # Concat all parts into the final scene audio
+    return assembly.concat_audio_files(part_files, out_name)

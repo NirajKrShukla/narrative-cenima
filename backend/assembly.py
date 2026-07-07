@@ -182,6 +182,36 @@ def concat_with_subs(scene_files: list[str], scene_narrations: list[str], out_na
     return out_name, srt_name
 
 
+def concat_audio_files(audio_files: list[str], out_name: str) -> str:
+    """Concatenate multiple mp3 audio files into a single mp3 (streams copied, no re-encode)."""
+    if not audio_files:
+        raise ValueError("No audio files to concatenate")
+    if len(audio_files) == 1:
+        src = STORAGE_DIR / audio_files[0]
+        dst = STORAGE_DIR / out_name
+        if src.resolve() != dst.resolve():
+            dst.write_bytes(src.read_bytes())
+        return out_name
+    list_file = STORAGE_DIR / f"_aconcat_{out_name}.txt"
+    lines = [f"file '{(STORAGE_DIR / af).as_posix()}'" for af in audio_files]
+    list_file.write_text("\n".join(lines))
+    out_path = STORAGE_DIR / out_name
+    cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(list_file),
+        "-c:a", "libmp3lame", "-b:a", "128k",
+        str(out_path),
+    ]
+    try:
+        _run(cmd)
+    finally:
+        try:
+            list_file.unlink()
+        except Exception:
+            pass
+    return out_name
+
+
 def image_to_video(image_file: str, out_name: str, duration: int = 4, size: str = "1280x720") -> str:
     """Fallback: create a Ken-Burns style video from a still image."""
     image_path = STORAGE_DIR / image_file
