@@ -101,3 +101,23 @@ Anonymous (no login). `EMERGENT_LLM_KEY` and `STRIPE_API_KEY=sk_test_emergent` a
 ## Tested (iteration_3)
 - 44/44 tests pass — 22 new + 22 regression
 - Verified: PATCH edit, PATCH translate to Hindi with native script, chained language priority, translation persistence, audio_file/final_file cleared on text change, arbitrary language names accepted, all 3 previous regressions still fixed
+
+## Update (2026-07-07 · Per-scene voice override + Voice preview player)
+### Per-scene voice override
+- Scene doc gains optional `voice` + `voice_model` fields (default: project-level or "onyx"/"tts-1")
+- **POST /scenes/{sid}/narration** priority chain updated: body.voice > scene.voice > project.voice
+- **PATCH /scenes/{sid}/narration** accepts `voice` and `voice_model` (independent of narration/language edits)
+- Scene UI shows a `voice · <name>` pill when an override is set
+
+### Voice preview (~5s sample player)
+- **GET /api/voice-preview?voice=X&model=Y&language=Z** returns a cinematic sample line ("Every story deserves a screen. Roll the first cut.") in 40+ built-in languages, or Claude-Haiku translated for anything else
+- Server-side caches sample MP3s at `storage/preview_<voice>_<model>_<lang>.mp3`; second call ~13× faster (0.13s vs 1.7s in live test)
+- Frontend `VoicePreview` button added:
+  - In Voice & Language settings panel (project-level default preview)
+  - In SceneNarrationEditor next to the per-scene voice picker
+- Uses HTML5 `Audio` element for playback with cached URL
+
+## Tested (iteration_4 — frontend E2E)
+- 28/28 assertions across 8 scenarios passed
+- New voice-preview + per-scene voice override UI verified end-to-end
+- Regression on Landing / Gallery / Studio still passes
