@@ -195,3 +195,25 @@ Three root-cause bugs prevented the demo videos from playing in real browsers:
 - /app/backend/server.py — `_range_response()`, `_media_type()`, `/storage/{filename}` GET+HEAD
 - /app/backend/scripts/gen_demos.py — dual MP4+WebM output, baseline profile, silent audio track
 - /app/frontend/src/pages/Landing.jsx — `<source>` fallback (WebM → MP4)
+
+## Update (2026-07-07 · Ramayan-themed demo tile)
+### New demo video: "The First Sight · Ramayan"
+A 22-second stylized short film themed on Lord Rama's first sight of Sita Mata in Janakpuri, reimagined with copyright-safe original names:
+- **Prince Ramaditya** (archetype: noble warrior prince)
+- **Princess Vaidehi** (archetype: princess of Mithila)
+
+Three acts, each with English title + Hindi couplet in Devanagari (Lohit-Devanagari font):
+- Act I · Arrival in Janakpuri · *जनकपुरी की सुवर्ण भोर*
+- Act II · The Royal Garden · *उद्यान में एक पुष्प, एक स्वप्न*
+- Act III · The First Glance · *एक क्षण — और संसार ठहर गया*
+
+Closing beats: "An AiPillu original short — A reimagining of the Ramayan — Copyright-safe original characters — Make your own film · aipillu.studio"
+
+### Files
+- `/app/backend/scripts/gen_ramayan_styled.py` — ffmpeg-only, no LLM credits (used now)
+- `/app/backend/scripts/gen_ramayan_demo.py` — full AI pipeline (Nano Banana + Hindi TTS + Ken-Burns + SRT). Ready to run once Emergent Universal Key balance is topped up (currently exceeded: $1.07/$1.00 budget).
+- Warm saffron/gold palette (0xE07A2B + 0xD4AF37), ornate frame borders, drifting vignettes
+- Landing page now shows **three demo tiles** in a 3-column grid (Ramayan first for max cultural relevance)
+
+## Note on Emergent LLM Key
+- Universal Key budget currently exceeded ($1.07/$1.00). Please top up in Profile → Universal Key → Add Balance to unlock: Nano Banana image generation, OpenAI TTS, Whisper, Claude analyze/translate, Sora 2 video, and the full AI Ramayan demo (`gen_ramayan_demo.py`).

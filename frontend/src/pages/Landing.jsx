@@ -217,13 +217,19 @@ export default function Landing() {  return (
             <Play className="w-3.5 h-3.5 text-gold" /> See it in action
           </div>
           <h2 className="font-display text-4xl sm:text-5xl tracking-tight max-w-3xl leading-tight">
-            Two short demos — <span className="text-gold">one for the mood</span>, one for the process.
+            Three short demos — <span className="text-gold">Ramayan, the mood, the process</span>.
           </h2>
           <p className="text-white/60 mt-4 max-w-2xl">
-            Both are less than 20 seconds. Autoplays on hover, loops silently, and works on every phone.
+            Each is under 25 seconds. Autoplays on hover, loops silently, and works on every phone.
           </p>
 
-          <div className="mt-14 grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="mt-14 grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <DemoTile
+              testid="demo-ramayan"
+              title="The First Sight · Ramayan"
+              caption="A copyright-safe reimagining — Prince Ramaditya beholds Princess Vaidehi in the gardens of Janakpuri."
+              src={`${process.env.REACT_APP_BACKEND_URL}/api/storage/demo_ramayan.mp4`}
+            />
             <DemoTile
               testid="demo-showcase"
               title="The Showreel"
