@@ -1,6 +1,7 @@
 """Story-to-Film AI Agent — FastAPI backend."""
 from __future__ import annotations
 import os
+import re
 import uuid
 import asyncio
 import logging
@@ -76,6 +77,14 @@ class GenerateNarrationRequest(BaseModel):
 class SceneNarrationEdit(BaseModel):
     narration: Optional[str] = None      # replace narration text directly
     language: Optional[str] = None       # if provided (and narration not), translate existing narration to this language
+    voice: Optional[str] = None          # per-scene voice override
+    voice_model: Optional[str] = None    # per-scene voice model override
+
+
+class VoicePreviewRequest(BaseModel):
+    voice: str = "onyx"
+    model: str = "tts-1"
+    language: Optional[str] = None       # optional language for the sample text
 
 
 class ProjectSettings(BaseModel):
@@ -468,8 +477,8 @@ async def gen_scene_narration(pid: str, sid: str, body: GenerateNarrationRequest
                 logger.error(f"Translation failed, using original: {e}")
 
     fname = f"{pid}_scene_{sid}.mp3"
-    voice = body.voice or doc.get("voice") or "onyx"
-    model = body.model or doc.get("voice_model") or "tts-1"
+    voice = body.voice or scene.get("voice") or doc.get("voice") or "onyx"
+    model = body.model or scene.get("voice_model") or doc.get("voice_model") or "tts-1"
     try:
         await ai_services.generate_narration(text, fname, voice=voice, model=model)
     except Exception as e:
@@ -478,7 +487,7 @@ async def gen_scene_narration(pid: str, sid: str, body: GenerateNarrationRequest
         {"id": pid, "scenes.id": sid},
         {"$set": {"scenes.$.audio_file": fname, "updated_at": now_iso()}},
     )
-    return {"ok": True, "audio_file": fname, "language": target_lang or None}
+    return {"ok": True, "audio_file": fname, "language": target_lang or None, "voice": voice, "voice_model": model}
 
 
 @api.patch("/projects/{pid}/scenes/{sid}/narration")
@@ -493,6 +502,26 @@ async def edit_scene_narration(pid: str, sid: str, body: SceneNarrationEdit):
 
     new_text = None
     new_lang = None
+    voice_update = None
+    voice_model_update = None
+
+    # Voice/model overrides can be set independently
+    ALLOWED_VOICES = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
+    if body.voice is not None:
+        if body.voice == "" or body.voice.lower() == "default":
+            voice_update = None  # clear override
+        elif body.voice not in ALLOWED_VOICES:
+            raise HTTPException(400, f"voice must be one of {sorted(ALLOWED_VOICES)} or empty to clear")
+        else:
+            voice_update = body.voice
+    if body.voice_model is not None:
+        if body.voice_model == "" or body.voice_model.lower() == "default":
+            voice_model_update = None
+        elif body.voice_model not in {"tts-1", "tts-1-hd"}:
+            raise HTTPException(400, "voice_model must be tts-1 or tts-1-hd")
+        else:
+            voice_model_update = body.voice_model
+
     if body.narration is not None:
         new_text = body.narration.strip()[:2000]
         new_lang = body.language.strip()[:60] if body.language else scene.get("language")
@@ -505,20 +534,30 @@ async def edit_scene_narration(pid: str, sid: str, body: SceneNarrationEdit):
             raise HTTPException(500, f"Translation failed: {e}")
         new_text = translated
         new_lang = body.language.strip()[:60]
-    else:
-        raise HTTPException(400, "Provide `narration` (to set text) and/or `language` (to translate)")
+    elif body.voice is None and body.voice_model is None:
+        raise HTTPException(400, "Provide `narration` (to set text), `language` (to translate), or `voice`/`voice_model` to update")
 
-    updates = {
-        "scenes.$.narration": new_text,
-        "updated_at": now_iso(),
-    }
+    updates = {"updated_at": now_iso()}
+    if new_text is not None:
+        updates["scenes.$.narration"] = new_text
+        # Clear stale audio when text changes
+        updates["scenes.$.audio_file"] = None
+        updates["scenes.$.final_file"] = None
     if new_lang is not None:
         updates["scenes.$.language"] = new_lang
-    # Clear the old audio since text changed
-    updates["scenes.$.audio_file"] = None
-    updates["scenes.$.final_file"] = None
+    if body.voice is not None:
+        updates["scenes.$.voice"] = voice_update
+    if body.voice_model is not None:
+        updates["scenes.$.voice_model"] = voice_model_update
+
     await projects_col.update_one({"id": pid, "scenes.id": sid}, {"$set": updates})
-    return {"ok": True, "narration": new_text, "language": new_lang}
+    return {
+        "ok": True,
+        "narration": new_text if new_text is not None else scene.get("narration"),
+        "language": new_lang if new_lang is not None else scene.get("language"),
+        "voice": voice_update if body.voice is not None else scene.get("voice"),
+        "voice_model": voice_model_update if body.voice_model is not None else scene.get("voice_model"),
+    }
 
 
 @api.post("/projects/{pid}/scenes/{sid}/mux")
@@ -953,6 +992,84 @@ async def tip_status(session_id: str):
         "currency": status.currency,
         "project_id": tx.get("project_id"),
     }
+
+
+@api.get("/voice-preview")
+async def voice_preview(voice: str = "onyx", model: str = "tts-1", language: str = ""):
+    """Return a short (~5s) TTS sample for the given voice/language.
+    Cached on disk under storage/preview_{voice}_{model}_{lang}.mp3 so repeated hits are instant."""
+    ALLOWED_VOICES = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
+    if voice not in ALLOWED_VOICES:
+        raise HTTPException(400, f"voice must be one of {sorted(ALLOWED_VOICES)}")
+    if model not in {"tts-1", "tts-1-hd"}:
+        raise HTTPException(400, "model must be tts-1 or tts-1-hd")
+
+    lang_key = (language or "auto").strip().lower()[:16] or "auto"
+    safe_lang = re.sub(r"[^a-z0-9]", "_", lang_key)
+    fname = f"preview_{voice}_{model}_{safe_lang}.mp3"
+    path = STORAGE_DIR / fname
+
+    if not path.exists():
+        # Pick a sample line in the requested language (or English fallback)
+        SAMPLES = {
+            "auto": "Every story deserves a screen. Roll the first cut.",
+            "en": "Every story deserves a screen. Roll the first cut.",
+            "hi": "हर कहानी को एक परदा चाहिए। पहला दृश्य शुरू करें।",
+            "bn": "প্রতিটি গল্পের একটি পর্দা প্রাপ্য।",
+            "ta": "ஒவ்வொரு கதைக்கும் ஒரு திரை தேவை.",
+            "te": "ప్రతి కథకూ ఒక తెర కావాలి.",
+            "mr": "प्रत्येक कथेला एक पडदा हवा असतो.",
+            "gu": "દરેક વાર્તાને એક પડદો જોઈએ.",
+            "kn": "ಪ್ರತಿ ಕಥೆಗೂ ಒಂದು ಪರದೆ ಬೇಕು.",
+            "ml": "എല്ലാ കഥയ്ക്കും ഒരു തിരശ്ശീല വേണം.",
+            "pa": "ਹਰ ਕਹਾਣੀ ਨੂੰ ਇੱਕ ਪਰਦਾ ਚਾਹੀਦਾ ਹੈ.",
+            "ur": "ہر کہانی کو ایک پردہ چاہیے۔",
+            "sa": "प्रत्येकस्य कथायाः एकं पटलम् आवश्यकम्।",
+            "ne": "हरेक कथाले पर्दा माग्छ।",
+            "ar": "كل قصة تستحق شاشة.",
+            "he": "לכל סיפור מגיע מסך.",
+            "fa": "هر داستان لایق یک صفحه است.",
+            "tr": "Her hikaye bir perdeyi hak eder.",
+            "ru": "Каждой истории — свой экран.",
+            "uk": "Кожній історії — свій екран.",
+            "es": "Cada historia merece una pantalla.",
+            "fr": "Chaque histoire mérite un écran.",
+            "de": "Jede Geschichte verdient eine Leinwand.",
+            "it": "Ogni storia merita uno schermo.",
+            "pt": "Toda história merece uma tela.",
+            "nl": "Elk verhaal verdient een scherm.",
+            "pl": "Każda historia zasługuje na ekran.",
+            "ja": "すべての物語にスクリーンを。",
+            "zh": "每一个故事都值得一个屏幕。",
+            "yue": "每一個故事都值得一個屏幕。",
+            "ko": "모든 이야기에는 화면이 필요합니다.",
+            "vi": "Mỗi câu chuyện xứng đáng có một màn ảnh.",
+            "th": "ทุกเรื่องราวสมควรมีจอ.",
+            "id": "Setiap cerita layak mendapat layar.",
+            "ms": "Setiap kisah berhak mendapat layar.",
+            "tl": "Bawat kuwento ay karapat-dapat sa tabing.",
+            "sw": "Kila hadithi inastahili skrini.",
+            "am": "እያንዳንዱ ታሪክ ማያ ገጽ ይገባዋል.",
+            "yo": "Gbogbo ìtàn yẹ láti wà lórí àwòrán.",
+            "zu": "Yonke indaba iyalifanela iskrini.",
+            "af": "Elke storie verdien 'n skerm.",
+        }
+        sample_text = SAMPLES.get(lang_key)
+        if not sample_text:
+            # For any language not in the map, ask Claude Haiku to translate the English line quickly
+            try:
+                sample_text = await ai_services.translate_narration(
+                    SAMPLES["en"], language or "English"
+                )
+            except Exception:
+                sample_text = SAMPLES["en"]
+
+        try:
+            await ai_services.generate_narration(sample_text, fname, voice=voice, model=model)
+        except Exception as e:
+            raise HTTPException(500, f"Preview generation failed: {e}")
+
+    return FileResponse(str(path), media_type="audio/mpeg", filename=fname)
 
 
 @api.get("/storage/{filename}")

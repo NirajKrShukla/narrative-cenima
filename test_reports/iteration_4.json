@@ -1,0 +1,78 @@
+{
+  "summary": "Frontend E2E for SceneNarrationEditor + Voice Preview flows on AiPillu Studio. Seeded a project via POST /api/projects then wrote a scene directly via pymongo (per spec, to avoid the ~2 min Claude analyze call). All 8 test scenarios (TEST 1-6 + TEST 8 + regression) executed against the public preview URL. 100% pass on the new voice-preview + per-scene voice override features. Landing / Gallery / Studio regression pages render correctly and 'Open Studio' nav works.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_4.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "VoicePreview component uses an in-memory Audio() ref (never inserted into the DOM). This works and plays audio correctly, but there is no visible playback UI/scrubber — a lightweight <audio controls> element attached to the DOM would let the user replay/stop/scrub without another network round-trip. Nice-to-have.",
+    "In SceneNarrationEditor.save(), payload sends `language: lang !== 'auto' ? lang : undefined` — correct — but the voice/voice_model empty-string check uses `voice !== ''` which correctly avoids overwriting. However, if a user *deliberately* wants to CLEAR a previously-set scene voice override back to 'Use project default', the current code has no way to send that unset (empty option value === '' is filtered out). Consider distinguishing 'unchanged' vs 'clear override' — either send explicit null, or add a Clear button. Minor UX gap.",
+    "VoicePreview error handling: if audio playback is blocked by browser autoplay policy (audioRef.current.play() rejects), a toast is fired — good. However, if the /api/voice-preview request itself 4xx/5xx's, the error is swallowed silently because `new Audio().src = url` never rejects. Consider probing with fetch() first, then playing on success.",
+    "SceneNarrationEditor pill for scene.language uses currentLangLabel.split(' ')[0], which for 'Hindi (हिन्दी)' correctly displays 'Hindi'. But for 'Chinese Mandarin (中文)' this yields just 'Chinese'. Acceptable, but not ideal for less-ambiguous languages. Cosmetic.",
+    "Studio.jsx is now 1864 lines — approaching the file-size threshold (>700). Recommend extracting SceneNarrationEditor, VoicePreview, VoiceLanguageSettings, BatchPanel, UnlockAndShare into their own files for maintainability."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested this iteration", "frontend": "100% (28/28 assertions across 8 test scenarios)"},
+  "test_credentials": "not applicable — no auth in this app",
+  "seed_data_creation": "Created 1 TEST_ project via POST /api/projects, then seeded scenes[] + blueprint + status='analyzed' via direct pymongo write to `story_to_film.projects` collection. Cleaned up all TEST_ projects (43 accumulated across prior iterations) after test completion.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Voice preview + per-scene voice override work end-to-end. TEST 5 (translate) makes ONE real Claude Haiku call per test run (fast, ~2-3s). TEST 1/4/8 hit /api/voice-preview which caches on disk under storage/preview_{voice}_{model}_{lang}.mp3 — first call ~1-2s (OpenAI TTS), cached calls <300ms. Regression note: the /app/frontend/src/pages/Landing.jsx hero text uses a <br> or block element between 'story' and 'deserves', so page.text_content() concats them without a space. Visual rendering is correct — do a substring check for 'deserves a screen' rather than the full 'Every story deserves a screen'.",
+  "detailed_test_results": {
+    "TEST_1_voice_settings_panel": {
+      "settings_panel_opens": true,
+      "all_five_controls_visible": true,
+      "settings_voice_preview_fires_request": true,
+      "preview_request_returned_200": true,
+      "settings_save_shows_toast_settings_saved": true,
+      "no_console_errors": true
+    },
+    "TEST_2_scenes_tab": {"scene_card_visible": true},
+    "TEST_3_narration_editor_opens": {
+      "all_7_testids_visible": true,
+      "seeded_narration_present": true
+    },
+    "TEST_4_per_scene_voice_override": {
+      "voice_select_shimmer_and_model_tts1": true,
+      "preview_button_fires_request": true,
+      "save_shows_narration_updated_toast": true,
+      "voice_pill_shimmer_visible_after_close": true,
+      "voice_persisted_on_reopen": "shimmer confirmed"
+    },
+    "TEST_5_translate_hindi": {
+      "textarea_now_devanagari": true,
+      "translated_text_sample": "योद्धा प्राचीन वन में प्रवेश किया, तलवार तैयार, हृदय दृढ़।",
+      "toast_translated_to_hi": true,
+      "translate_latency_seconds": 3
+    },
+    "TEST_6_direct_edit": {
+      "new_text_saved_and_visible_on_closed_editor": true,
+      "toast_narration_updated": true
+    },
+    "TEST_8_preview_caching": {
+      "first_click_cycle_seconds": 3.51,
+      "second_click_cycle_seconds": 1.51,
+      "note": "Second click completes visibly faster; cache appears to be working. Exact server latency not directly measured but 4 successful 200 responses observed."
+    },
+    "REGRESSION": {
+      "landing_hero_text_present_visually": true,
+      "landing_hero_substring_check_note": "text_content() concatenates 'story' and 'deserves' without whitespace due to block-level rendering — visual layout is correct",
+      "open_studio_nav_works": true,
+      "gallery_page_renders_with_'Films the community made'_or_empty_state": true,
+      "studio_new_project_creates_and_navigates": "already exercised via API POST that produced /studio/<pid> route"
+    },
+    "voice_preview_responses_observed": [
+      "GET /api/voice-preview?voice=nova&model=tts-1&language=auto -> 200",
+      "GET /api/voice-preview?voice=shimmer&model=tts-1&language=auto -> 200",
+      "GET /api/voice-preview?voice=onyx&model=tts-1&language=en -> 200 (first, ~cold)",
+      "GET /api/voice-preview?voice=onyx&model=tts-1&language=en -> 200 (second, cached)"
+    ]
+  },
+  "rca of the issue": "N/A — no bugs found this iteration. All new voice preview / per-scene voice override / translate flows work as specified."
+}

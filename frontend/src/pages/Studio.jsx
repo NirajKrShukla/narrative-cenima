@@ -1317,16 +1317,19 @@ const VoiceLanguageSettings = ({ project, onReload }) => {
         </div>
         <div>
           <label className="overline">Voice</label>
-          <select
-            className="input-field mt-2"
-            value={voice}
-            onChange={(e) => setVoice(e.target.value)}
-            data-testid="settings-voice"
-          >
-            {VOICES.map((v) => (
-              <option key={v.id} value={v.id}>{v.id} — {v.desc}</option>
-            ))}
-          </select>
+          <div className="flex gap-2 mt-2">
+            <select
+              className="input-field flex-1"
+              value={voice}
+              onChange={(e) => setVoice(e.target.value)}
+              data-testid="settings-voice"
+            >
+              {VOICES.map((v) => (
+                <option key={v.id} value={v.id}>{v.id} — {v.desc}</option>
+              ))}
+            </select>
+            <VoicePreview voice={voice} model={voiceModel} language={language} testid="settings-voice-preview" />
+          </div>
         </div>
         <div>
           <label className="overline">Quality</label>
@@ -1527,20 +1530,58 @@ const BatchPanel = ({ project, onReload }) => {
 };
 
 
+// ---------- Voice preview player ----------
+const VoicePreview = ({ voice, model = "tts-1", language = "auto", testid = "voice-preview" }) => {
+  const [busy, setBusy] = useState(false);
+  const audioRef = useRef(null);
+
+  const play = async () => {
+    setBusy(true);
+    try {
+      const url = `${process.env.REACT_APP_BACKEND_URL}/api/voice-preview?voice=${voice}&model=${model}&language=${encodeURIComponent(language || "auto")}`;
+      if (!audioRef.current) audioRef.current = new Audio();
+      audioRef.current.src = url;
+      audioRef.current.play().catch(() => toast.error("Playback blocked"));
+    } catch (e) {
+      toast.error("Preview failed");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <button
+      type="button"
+      className="p-2 rounded-md border border-white/10 hover:border-gold/50 hover:bg-gold/5 transition inline-flex items-center gap-1.5 text-xs"
+      onClick={play}
+      disabled={busy}
+      title={`Preview ${voice} in ${language}`}
+      data-testid={testid}
+    >
+      {busy ? <Spinner className="w-3 h-3" /> : <Play className="w-3 h-3 text-gold" />}
+      Preview
+    </button>
+  );
+};
+
 // ---------- Per-scene narration editor with language override ----------
 const SceneNarrationEditor = ({ scene, projectId, onReload }) => {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(scene.narration || "");
   const [lang, setLang] = useState(scene.language || "auto");
+  const [voice, setVoice] = useState(scene.voice || "");
+  const [voiceModel, setVoiceModel] = useState(scene.voice_model || "");
   const [saving, setSaving] = useState(false);
   const [translating, setTranslating] = useState(false);
 
   const save = async () => {
     setSaving(true);
     try {
-      await API.patch(`/projects/${projectId}/scenes/${scene.id}/narration`, {
-        narration: text, language: lang !== "auto" ? lang : undefined,
-      });
+      const payload = {
+        narration: text,
+        language: lang !== "auto" ? lang : undefined,
+      };
+      if (voice !== "") payload.voice = voice;
+      if (voiceModel !== "") payload.voice_model = voiceModel;
+      await API.patch(`/projects/${projectId}/scenes/${scene.id}/narration`, payload);
       toast.success("Narration updated");
       setOpen(false);
       await onReload();
@@ -1550,10 +1591,7 @@ const SceneNarrationEditor = ({ scene, projectId, onReload }) => {
   };
 
   const translate = async () => {
-    if (!lang || lang === "auto") {
-      toast.error("Pick a target language first");
-      return;
-    }
+    if (!lang || lang === "auto") { toast.error("Pick a target language first"); return; }
     setTranslating(true);
     try {
       const { data } = await API.patch(`/projects/${projectId}/scenes/${scene.id}/narration`, {
@@ -1568,14 +1606,20 @@ const SceneNarrationEditor = ({ scene, projectId, onReload }) => {
   };
 
   const currentLangLabel = LANGUAGES.find((l) => l.id === (scene.language || "auto"))?.label || (scene.language || "Auto");
+  // Effective voice for preview
+  const effectiveVoice = (voice || scene.voice) || "onyx";
+  const effectiveModel = (voiceModel || scene.voice_model) || "tts-1";
 
   return (
     <div className="mt-3 p-3 rounded border border-white/5 bg-black/40">
       <div className="flex items-center justify-between mb-2 gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="overline">Narration</span>
           {scene.language && scene.language !== "auto" && (
             <Pill tone="gold">{currentLangLabel.split(" ")[0]}</Pill>
+          )}
+          {scene.voice && (
+            <Pill tone="neutral">voice · {scene.voice}</Pill>
           )}
         </div>
         <button
@@ -1599,9 +1643,9 @@ const SceneNarrationEditor = ({ scene, projectId, onReload }) => {
             onChange={(e) => setText(e.target.value)}
             data-testid={`narration-textarea-${scene.id}`}
           />
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2 items-end">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="overline">Scene narration language (overrides project default)</label>
+              <label className="overline">Language (overrides project default)</label>
               <select
                 className="input-field mt-1"
                 value={lang}
@@ -1628,8 +1672,45 @@ const SceneNarrationEditor = ({ scene, projectId, onReload }) => {
                 })()}
               </select>
             </div>
+            <div>
+              <label className="overline">Voice (per-scene override)</label>
+              <div className="flex gap-2 mt-1">
+                <select
+                  className="input-field flex-1"
+                  value={voice}
+                  onChange={(e) => setVoice(e.target.value)}
+                  data-testid={`narration-voice-${scene.id}`}
+                >
+                  <option value="">Use project default</option>
+                  {VOICES.map((v) => (
+                    <option key={v.id} value={v.id}>{v.id} — {v.desc}</option>
+                  ))}
+                </select>
+                <VoicePreview
+                  voice={effectiveVoice}
+                  model={effectiveModel}
+                  language={lang}
+                  testid={`narration-preview-${scene.id}`}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="overline">Voice quality</label>
+              <select
+                className="input-field mt-1"
+                value={voiceModel}
+                onChange={(e) => setVoiceModel(e.target.value)}
+                data-testid={`narration-model-${scene.id}`}
+              >
+                <option value="">Use project default</option>
+                <option value="tts-1">tts-1 (fast)</option>
+                <option value="tts-1-hd">tts-1-hd (studio)</option>
+              </select>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 justify-end">
             <button className="btn-ghost text-xs" onClick={translate} disabled={translating} data-testid={`narration-translate-${scene.id}`}>
-              {translating ? <Spinner /> : <Globe className="w-3.5 h-3.5" />} Translate
+              {translating ? <Spinner /> : <Globe className="w-3.5 h-3.5" />} Translate to selected
             </button>
             <button className="btn-gold text-xs" onClick={save} disabled={saving} data-testid={`narration-save-${scene.id}`}>
               {saving ? <Spinner /> : <Check className="w-3.5 h-3.5" />} Save
