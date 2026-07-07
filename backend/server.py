@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import re
+import json
 import uuid
 import asyncio
 import logging
@@ -101,6 +102,11 @@ class BatchRequest(BaseModel):
     size: str = "1280x720"
 
 
+class DubRequest(BaseModel):
+    languages: list[str] = Field(default_factory=list)   # e.g. ["hi", "es", "Yoruba"]
+    voice: Optional[str] = None    # optional voice override for all dubs
+
+
 class PublishRequest(BaseModel):
     is_public: bool = True
     tip_vpa: Optional[str] = None
@@ -150,6 +156,9 @@ async def create_project(body: ProjectCreate):
         "characters": [],         # {..., image_file}
         "scenes": [],             # {..., image_file, video_file, audio_file, final_file}
         "final_film": None,
+        "final_srt": None,       # SRT file for the final film
+        "dubs": [],              # [{language, film_file, srt_file, size_bytes, created_at}]
+        "dub_job": None,         # {running, total, completed, current, errors[]}
         "status": "created",
         "paid": False,
         "free_granted": False,
@@ -592,24 +601,36 @@ async def assemble_film(pid: str):
     if not doc:
         raise HTTPException(404, "Project not found")
     scenes = doc.get("scenes") or []
-    # Use each scene's final_file if present, else video_file
-    ordered = []
+    # Use each scene's final_file if present, else video_file. Also collect narrations.
+    ordered_files = []
+    ordered_narr = []
     for s in scenes:
         f = s.get("final_file") or s.get("video_file")
         if f:
-            ordered.append(f)
-    if not ordered:
+            ordered_files.append(f)
+            ordered_narr.append(s.get("narration") or "")
+    if not ordered_files:
         raise HTTPException(400, "No scene videos to assemble")
+
     fname = f"{pid}_final_film.mp4"
+    srt_name = f"{pid}_final_film.srt"
     try:
-        await asyncio.to_thread(assembly.concat_scenes, ordered, fname)
+        await asyncio.to_thread(
+            assembly.concat_with_subs,
+            ordered_files, ordered_narr, fname, srt_name,
+        )
     except Exception as e:
         raise HTTPException(500, f"Assembly failed: {e}")
     await projects_col.update_one(
         {"id": pid},
-        {"$set": {"final_film": fname, "status": "assembled", "updated_at": now_iso()}},
+        {"$set": {
+            "final_film": fname,
+            "final_srt": srt_name,
+            "status": "assembled",
+            "updated_at": now_iso(),
+        }},
     )
-    return {"ok": True, "final_film": fname}
+    return {"ok": True, "final_film": fname, "final_srt": srt_name}
 
 
 # ----------------------------------------------------------------------------
@@ -751,13 +772,22 @@ async def _batch_worker(pid: str, mode: str, video_type: str, duration: int, siz
             await _bump_batch(pid, current="assembling")
             fresh = await projects_col.find_one({"id": pid})
             scenes_final = fresh.get("scenes") or []
-            ordered = [s.get("final_file") or s.get("video_file") for s in scenes_final if s.get("final_file") or s.get("video_file")]
-            if ordered:
+            ordered_files = []
+            ordered_narr = []
+            for s in scenes_final:
+                f = s.get("final_file") or s.get("video_file")
+                if f:
+                    ordered_files.append(f)
+                    ordered_narr.append(s.get("narration") or "")
+            if ordered_files:
                 fname_final = f"{pid}_final_film.mp4"
-                await asyncio.to_thread(assembly.concat_scenes, ordered, fname_final)
+                srt_final = f"{pid}_final_film.srt"
+                await asyncio.to_thread(
+                    assembly.concat_with_subs, ordered_files, ordered_narr, fname_final, srt_final,
+                )
                 await projects_col.update_one(
                     {"id": pid},
-                    {"$set": {"final_film": fname_final, "status": "assembled"}},
+                    {"$set": {"final_film": fname_final, "final_srt": srt_final, "status": "assembled"}},
                 )
         except Exception as e:
             errors.append(f"assemble: {str(e)[:200]}")
@@ -813,6 +843,267 @@ async def get_batch(pid: str):
     if not doc:
         raise HTTPException(404, "Project not found")
     return doc.get("batch") or {"running": False}
+
+
+@api.get("/projects/{pid}/batch/stream")
+async def batch_stream(pid: str):
+    """Server-Sent Events stream of batch progress. Sends one event every ~1s
+    until the job is not running, then a final 'done' event and closes."""
+    doc = await projects_col.find_one({"id": pid}, {"_id": 0, "batch": 1})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+
+    async def event_gen():
+        last_json = None
+        stable_done_ticks = 0
+        while True:
+            d = await projects_col.find_one({"id": pid}, {"_id": 0, "batch": 1, "dub_job": 1})
+            payload = {
+                "batch": d.get("batch") if d else None,
+                "dub_job": d.get("dub_job") if d else None,
+            }
+            cur = json.dumps(payload, default=str)
+            if cur != last_json:
+                yield f"event: progress\ndata: {cur}\n\n"
+                last_json = cur
+            running = (payload["batch"] or {}).get("running") or (payload["dub_job"] or {}).get("running")
+            if not running:
+                stable_done_ticks += 1
+                # Send a final 'done' event and close after ~2 ticks of idle
+                if stable_done_ticks >= 2:
+                    yield f"event: done\ndata: {cur}\n\n"
+                    return
+            else:
+                stable_done_ticks = 0
+            await asyncio.sleep(1.0)
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ----------------------------------------------------------------------------
+# Multilingual auto-dub — render the final film into N language variants
+# ----------------------------------------------------------------------------
+
+async def _dub_worker(pid: str, languages: list[str], voice_override: Optional[str]):
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        return
+    scenes = doc.get("scenes") or []
+    if not scenes:
+        await projects_col.update_one({"id": pid}, {"$set": {"dub_job.running": False, "dub_job.errors": ["No scenes"]}})
+        return
+
+    # Steps per language: N scenes translated + N narrated + N muxed + 1 concat = 3N+1
+    per_lang_steps = 3 * len(scenes) + 1
+    total = per_lang_steps * len(languages)
+    completed = 0
+    errors: list[str] = []
+
+    await projects_col.update_one(
+        {"id": pid},
+        {"$set": {"dub_job": {
+            "running": True, "languages": languages, "total": total, "completed": 0,
+            "current": "starting", "errors": [], "started_at": now_iso(), "finished_at": None,
+            "results": [],
+        }}},
+    )
+
+    default_voice = voice_override or doc.get("voice") or "onyx"
+    default_model = doc.get("voice_model") or "tts-1"
+
+    all_results = []
+    for lang in languages:
+        safe_lang = re.sub(r"[^a-zA-Z0-9]", "_", lang)[:16] or "lang"
+        try:
+            # Step 1: Translate each scene narration, then TTS, then mux
+            per_scene_files = []
+            per_scene_narr = []
+            for scene in scenes:
+                sid = scene.get("id")
+                orig = scene.get("narration") or scene.get("description") or ""
+
+                await projects_col.update_one(
+                    {"id": pid},
+                    {"$set": {"dub_job.current": f"{lang}:{sid}:translate"}},
+                )
+                try:
+                    translated = await ai_services.translate_narration(orig, lang)
+                except Exception as e:
+                    translated = orig
+                    errors.append(f"{lang}:{sid}:translate: {str(e)[:120]}")
+                completed += 1
+                await projects_col.update_one({"id": pid}, {"$set": {"dub_job.completed": completed}})
+
+                await projects_col.update_one(
+                    {"id": pid},
+                    {"$set": {"dub_job.current": f"{lang}:{sid}:tts"}},
+                )
+                tts_name = f"{pid}_dub_{safe_lang}_scene_{sid}.mp3"
+                try:
+                    await ai_services.generate_narration(
+                        translated, tts_name, voice=default_voice, model=default_model,
+                    )
+                except Exception as e:
+                    errors.append(f"{lang}:{sid}:tts: {str(e)[:120]}")
+                    tts_name = None
+                completed += 1
+                await projects_col.update_one({"id": pid}, {"$set": {"dub_job.completed": completed}})
+
+                await projects_col.update_one(
+                    {"id": pid},
+                    {"$set": {"dub_job.current": f"{lang}:{sid}:mux"}},
+                )
+                scene_video = scene.get("video_file")
+                if not scene_video:
+                    errors.append(f"{lang}:{sid}:mux: no video_file — run Auto-Pilot first")
+                    completed += 1
+                    await projects_col.update_one({"id": pid}, {"$set": {"dub_job.completed": completed}})
+                    continue
+                mux_name = f"{pid}_dub_{safe_lang}_scene_{sid}_final.mp4"
+                try:
+                    await asyncio.to_thread(
+                        assembly.mux_scene,
+                        scene_video, tts_name, mux_name, None,  # subtitles come via SRT concat step, not burned-in
+                    )
+                    per_scene_files.append(mux_name)
+                    per_scene_narr.append(translated)
+                except Exception as e:
+                    errors.append(f"{lang}:{sid}:mux: {str(e)[:120]}")
+                completed += 1
+                await projects_col.update_one({"id": pid}, {"$set": {"dub_job.completed": completed}})
+
+            # Concat + subs
+            await projects_col.update_one(
+                {"id": pid},
+                {"$set": {"dub_job.current": f"{lang}:assemble"}},
+            )
+            if per_scene_files:
+                film_name = f"{pid}_dub_{safe_lang}_film.mp4"
+                srt_name = f"{pid}_dub_{safe_lang}.srt"
+                try:
+                    await asyncio.to_thread(
+                        assembly.concat_with_subs, per_scene_files, per_scene_narr, film_name, srt_name,
+                    )
+                    size_bytes = (STORAGE_DIR / film_name).stat().st_size
+                    all_results.append({
+                        "language": lang,
+                        "film_file": film_name,
+                        "srt_file": srt_name,
+                        "size_bytes": size_bytes,
+                        "size_mb": round(size_bytes / (1024 * 1024), 2),
+                        "created_at": now_iso(),
+                    })
+                except Exception as e:
+                    errors.append(f"{lang}:assemble: {str(e)[:200]}")
+            completed += 1
+            await projects_col.update_one(
+                {"id": pid},
+                {"$set": {"dub_job.completed": completed, "dub_job.errors": errors, "dub_job.results": all_results}},
+            )
+        except Exception as e:
+            errors.append(f"{lang}: {str(e)[:200]}")
+
+    # Merge with existing dubs (overwrite by language)
+    existing = (await projects_col.find_one({"id": pid})).get("dubs") or []
+    by_lang = {d.get("language"): d for d in existing}
+    for r in all_results:
+        by_lang[r["language"]] = r
+    merged = list(by_lang.values())
+
+    await projects_col.update_one(
+        {"id": pid},
+        {"$set": {
+            "dubs": merged,
+            "dub_job.running": False,
+            "dub_job.finished_at": now_iso(),
+            "dub_job.current": "done",
+            "dub_job.errors": errors,
+        }},
+    )
+
+
+@api.post("/projects/{pid}/dub")
+async def start_dub(pid: str, body: DubRequest):
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    scenes = doc.get("scenes") or []
+    if not scenes:
+        raise HTTPException(400, "Analyze the story first")
+    # Ensure at least each scene has a video_file
+    missing = [s.get("id") for s in scenes if not s.get("video_file")]
+    if missing:
+        raise HTTPException(400, f"These scenes have no video yet: {missing}. Run Auto-Pilot first.")
+    langs = [lang.strip() for lang in (body.languages or []) if lang and lang.strip()]
+    if not langs:
+        raise HTTPException(400, "Provide at least one target language")
+    if len(langs) > 10:
+        raise HTTPException(400, "Max 10 languages per dub job")
+    if (doc.get("dub_job") or {}).get("running"):
+        return {"ok": True, "already_running": True}
+    asyncio.create_task(_dub_worker(pid, langs, body.voice))
+    return {"ok": True, "languages": langs}
+
+
+@api.get("/projects/{pid}/dubs")
+async def list_dubs(pid: str):
+    doc = await projects_col.find_one({"id": pid}, {"_id": 0, "dubs": 1, "dub_job": 1})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    return {"dubs": doc.get("dubs") or [], "dub_job": doc.get("dub_job")}
+
+
+@api.get("/projects/{pid}/dubs/{language}/film")
+async def download_dub(pid: str, language: str, user_id: str = ""):
+    """Gated dub download — same paywall rules as the primary film."""
+    doc = await projects_col.find_one({"id": pid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    if not (doc.get("paid") or doc.get("free_granted")):
+        raise HTTPException(402, "Film not unlocked — please unlock the primary film first")
+    dubs = doc.get("dubs") or []
+    match = next((d for d in dubs if d.get("language") == language), None)
+    if not match:
+        raise HTTPException(404, f"No dub for language: {language}")
+    path = STORAGE_DIR / match["film_file"]
+    if not path.exists():
+        raise HTTPException(404, "Dub file missing on disk")
+    safe_title = (doc.get("title") or "aipillu-film").replace("/", "-")[:60]
+    safe_lang = re.sub(r"[^a-zA-Z0-9]", "_", language)[:16]
+    return FileResponse(str(path), media_type="video/mp4", filename=f"{safe_title}_{safe_lang}.mp4")
+
+
+@api.get("/projects/{pid}/subtitles")
+async def download_subs(pid: str, language: str = ""):
+    """Return the SRT subtitle file. If `language` is provided and a dub exists, returns the dub's SRT.
+    Otherwise returns the primary film SRT (public — subs alone are not gated)."""
+    doc = await projects_col.find_one({"id": pid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    srt_file = None
+    if language:
+        dubs = doc.get("dubs") or []
+        match = next((d for d in dubs if d.get("language") == language), None)
+        if not match:
+            raise HTTPException(404, f"No dub for language: {language}")
+        srt_file = match.get("srt_file")
+    else:
+        srt_file = doc.get("final_srt")
+    if not srt_file:
+        raise HTTPException(404, "No subtitles available")
+    path = STORAGE_DIR / srt_file
+    if not path.exists():
+        raise HTTPException(404, "Subtitle file missing")
+    return FileResponse(str(path), media_type="application/x-subrip", filename=srt_file)
 
 
 # ----------------------------------------------------------------------------

@@ -121,3 +121,30 @@ Anonymous (no login). `EMERGENT_LLM_KEY` and `STRIPE_API_KEY=sk_test_emergent` a
 - 28/28 assertions across 8 scenarios passed
 - New voice-preview + per-scene voice override UI verified end-to-end
 - Regression on Landing / Gallery / Studio still passes
+
+## Update (2026-07-07 · Multilingual Auto-Dub + SRT + SSE)
+### Multilingual Auto-Dub (revenue multiplier)
+- New `POST /api/projects/{pid}/dub {languages: [...], voice?}` — background job renders full-film variants in up to 10 languages per call.
+- Per-language pipeline: Claude Haiku translates each scene narration → OpenAI TTS in target language → ffmpeg re-mux per scene → concat with soft SRT subs → downloadable MP4.
+- `GET /api/projects/{pid}/dubs` — list of `{language, film_file, srt_file, size_bytes, size_mb, created_at}`
+- `GET /api/projects/{pid}/dubs/{lang}/film` — gated download (same paywall as primary film — single unlock covers all dubs).
+- Project doc gains `dubs: []` and `dub_job: {running, total, completed, current, errors, results}`
+- Frontend `DubPanel` in the Assemble tab (visible only after unlock): 16 popular languages as toggle chips, any custom language input, up to 10 languages per job, per-dub video preview + MP4 + SRT download.
+
+### SRT subtitle track
+- `assembly.build_srt` + `probe_duration` + `attach_soft_subs` helpers
+- `assembly.concat_with_subs` — probes each clip's duration, emits time-accurate SRT (subtitle for the middle 80% of each scene), concatenates + embeds soft `mov_text` subtitle track in the MP4.
+- `GET /api/projects/{pid}/subtitles?language=` — public SRT download (subs alone are not paywalled). Returns dub-specific SRT if `language=X`, else primary film SRT.
+- `assemble_film` and Auto-Pilot's auto-assemble step both use `concat_with_subs` now (no more burned-in subs).
+- Frontend adds an **SRT download button** alongside the MP4 button in the Share panel, plus per-dub MP4+SRT tiles.
+
+### Server-Sent Events (SSE) for batch/dub progress
+- `GET /api/projects/{pid}/batch/stream` — text/event-stream endpoint, emits `progress` events (JSON `{batch, dub_job}`) whenever state changes, ~1s tick, `done` event when both jobs idle for 2 ticks then closes.
+- Frontend Batch panel and DubPanel both use `EventSource`; graceful fallback to polling on error.
+- Reduces load: no more every-2.5s polling; instant scene-level updates.
+
+## Verified live
+- SSE endpoint streams events + done event correctly (curl -N test)
+- Dub endpoint rejects requests with no scenes (400) and missing videos (400 with scene ids list)
+- Subtitle download 404s cleanly when no film exists
+- Zero JS console errors after full UI load

@@ -7,7 +7,7 @@ import {
   Image as ImageIcon, Video, Volume2, Layers, Download, Loader2, ChevronRight,
   ArrowLeft, Play, ShieldCheck, RefreshCw, Zap, Lock, Share2, IndianRupee,
   Copy, Check, MessageCircle, Twitter, Facebook, Send, Linkedin, Youtube, Instagram,
-  Settings, Globe, Heart, Rocket, AlertCircle,
+  Settings, Globe, Heart, Rocket, AlertCircle, Languages, Type, Subtitles, X,
 } from "lucide-react";
 import { API, assetUrl } from "../lib/api";
 
@@ -1040,9 +1040,18 @@ const UnlockAndShare = ({ project, unlock, unlocked, loading, payBusy, polling, 
           </div>
 
           {/* Primary actions */}
-          <div className="grid grid-cols-2 gap-3 mb-5">
+          <div className="grid grid-cols-3 gap-3 mb-5">
             <a className="btn-gold justify-center" href={filmDownloadUrl} download data-testid="download-film">
               <Download className="w-4 h-4" /> Download MP4
+            </a>
+            <a
+              className="btn-ghost justify-center"
+              href={`${process.env.REACT_APP_BACKEND_URL}/api/projects/${project.id}/subtitles`}
+              download
+              data-testid="download-srt"
+              title="Download SRT subtitle file"
+            >
+              <Subtitles className="w-4 h-4" /> SRT
             </a>
             <button className="btn-ghost justify-center" onClick={copyLink} data-testid="copy-link">
               {copied ? <Check className="w-4 h-4 text-gold" /> : <Copy className="w-4 h-4" />} {copied ? "Copied" : "Copy link"}
@@ -1083,6 +1092,8 @@ const UnlockAndShare = ({ project, unlock, unlocked, loading, payBusy, polling, 
           </div>
 
           <PublishSection project={project} onRefresh={onRefresh} />
+
+          <DubPanel project={project} onReload={onRefresh} />
         </div>
       )}
     </Section>
@@ -1399,36 +1410,47 @@ const BatchPanel = ({ project, onReload }) => {
   const [videoType, setVideoType] = useState("kenburns");
   const [batch, setBatch] = useState(project.batch || null);
   const [starting, setStarting] = useState(false);
-  const timerRef = useRef(null);
+  const esRef = useRef(null);
 
   const fetchBatch = useCallback(async () => {
     try {
       const { data } = await API.get(`/projects/${project.id}/batch`);
       setBatch(data);
-      if (data?.running) return true;
     } catch (e) { /* ignore */ }
-    return false;
   }, [project.id]);
 
-  useEffect(() => {
-    fetchBatch();
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [fetchBatch]);
+  useEffect(() => { fetchBatch(); }, [fetchBatch]);
 
+  // Server-Sent Events for realtime batch progress
   useEffect(() => {
-    if (batch?.running) {
-      timerRef.current = setInterval(async () => {
-        const running = await fetchBatch();
-        if (!running && timerRef.current) {
-          clearInterval(timerRef.current);
-          timerRef.current = null;
-          await onReload();
-          toast.success("Auto-Pilot finished");
-        }
-      }, 2500);
-      return () => timerRef.current && clearInterval(timerRef.current);
-    }
-  }, [batch?.running]);
+    if (!batch?.running) return;
+    const url = `${process.env.REACT_APP_BACKEND_URL}/api/projects/${project.id}/batch/stream`;
+    const es = new EventSource(url);
+    esRef.current = es;
+    es.addEventListener("progress", (ev) => {
+      try {
+        const payload = JSON.parse(ev.data);
+        if (payload.batch) setBatch(payload.batch);
+      } catch (e) { /* ignore */ }
+    });
+    es.addEventListener("done", async (ev) => {
+      try {
+        const payload = JSON.parse(ev.data);
+        if (payload.batch) setBatch(payload.batch);
+      } catch (e) { /* ignore */ }
+      es.close();
+      esRef.current = null;
+      await onReload();
+      toast.success("Auto-Pilot finished");
+    });
+    es.onerror = () => {
+      es.close();
+      esRef.current = null;
+      // Fallback to polling if SSE dies
+      fetchBatch();
+    };
+    return () => { es.close(); esRef.current = null; };
+  }, [batch?.running, project.id, fetchBatch, onReload]);
 
   const start = async () => {
     setStarting(true);
@@ -1857,6 +1879,243 @@ const BatchProgressCard = ({ batch, project, percent }) => {
           );
         })}
       </div>
+    </div>
+  );
+};
+
+
+// ---------- Multilingual Auto-Dub Panel ----------
+const POPULAR_DUB_LANGS = [
+  { id: "hi", label: "Hindi", native: "हिन्दी" },
+  { id: "en", label: "English", native: "English" },
+  { id: "es", label: "Spanish", native: "Español" },
+  { id: "fr", label: "French", native: "Français" },
+  { id: "de", label: "German", native: "Deutsch" },
+  { id: "pt", label: "Portuguese", native: "Português" },
+  { id: "ar", label: "Arabic", native: "العربية" },
+  { id: "zh", label: "Mandarin", native: "中文" },
+  { id: "ja", label: "Japanese", native: "日本語" },
+  { id: "ko", label: "Korean", native: "한국어" },
+  { id: "ru", label: "Russian", native: "Русский" },
+  { id: "id", label: "Indonesian", native: "Bahasa" },
+  { id: "sw", label: "Swahili", native: "Kiswahili" },
+  { id: "bn", label: "Bengali", native: "বাংলা" },
+  { id: "ta", label: "Tamil", native: "தமிழ்" },
+  { id: "te", label: "Telugu", native: "తెలుగు" },
+];
+
+const DubPanel = ({ project, onReload }) => {
+  const [selected, setSelected] = useState([]);
+  const [customLang, setCustomLang] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [dubs, setDubs] = useState(project.dubs || []);
+  const [dubJob, setDubJob] = useState(project.dub_job || null);
+  const esRef = useRef(null);
+  const userId = getUserId();
+
+  const fetchDubs = useCallback(async () => {
+    try {
+      const { data } = await API.get(`/projects/${project.id}/dubs`);
+      setDubs(data.dubs || []);
+      setDubJob(data.dub_job || null);
+    } catch (e) { /* ignore */ }
+  }, [project.id]);
+
+  useEffect(() => { fetchDubs(); }, [fetchDubs]);
+
+  // SSE stream for dub progress
+  useEffect(() => {
+    if (!dubJob?.running) return;
+    const url = `${process.env.REACT_APP_BACKEND_URL}/api/projects/${project.id}/batch/stream`;
+    const es = new EventSource(url);
+    esRef.current = es;
+    const handle = (ev) => {
+      try {
+        const payload = JSON.parse(ev.data);
+        if (payload.dub_job) setDubJob(payload.dub_job);
+      } catch (e) { /* ignore */ }
+    };
+    es.addEventListener("progress", handle);
+    es.addEventListener("done", async (ev) => {
+      handle(ev);
+      es.close();
+      esRef.current = null;
+      await fetchDubs();
+      await onReload();
+      toast.success("Multilingual dub finished");
+    });
+    es.onerror = () => { es.close(); esRef.current = null; };
+    return () => { es.close(); esRef.current = null; };
+  }, [dubJob?.running, project.id, fetchDubs, onReload]);
+
+  const toggleLang = (id) => {
+    setSelected((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  };
+
+  const addCustom = () => {
+    const l = customLang.trim();
+    if (!l) return;
+    if (selected.length >= 10) { toast.error("Max 10 languages per job"); return; }
+    if (!selected.includes(l)) setSelected([...selected, l]);
+    setCustomLang("");
+  };
+
+  const startDub = async () => {
+    if (selected.length === 0) { toast.error("Pick at least one language"); return; }
+    setStarting(true);
+    try {
+      await API.post(`/projects/${project.id}/dub`, { languages: selected });
+      toast.success("Dub job started");
+      setDubJob({ running: true, total: 0, completed: 0, current: "starting", languages: selected });
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Dub start failed");
+    } finally { setStarting(false); }
+  };
+
+  const dubPercent = dubJob?.total ? Math.min(100, Math.round((dubJob.completed / dubJob.total) * 100)) : 0;
+  const canDub = !!project.final_film;
+
+  return (
+    <div className="mt-6 rounded-md border border-white/10 bg-black/30 p-5" data-testid="dub-panel">
+      <div className="flex items-center gap-2 mb-2">
+        <Languages className="w-4 h-4 text-gold" />
+        <div className="font-display text-lg">Multilingual auto-dub</div>
+      </div>
+      <p className="text-xs text-white/50 mb-4">
+        Render your film into any number of languages in one click. Each dub gets translated narration,
+        native-language TTS, embedded soft subtitles, and its own downloadable MP4.
+      </p>
+
+      {!canDub && (
+        <div className="text-sm text-white/60 italic">Assemble the primary film first, then multilingual dubs unlock.</div>
+      )}
+
+      {canDub && (
+        <>
+          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-4">
+            {POPULAR_DUB_LANGS.map((l) => {
+              const on = selected.includes(l.id);
+              return (
+                <button
+                  key={l.id}
+                  onClick={() => toggleLang(l.id)}
+                  disabled={dubJob?.running}
+                  className={`p-2 rounded-md border text-left text-xs transition ${
+                    on ? "border-gold/60 bg-gold/10 text-gold" : "border-white/10 hover:border-white/25"
+                  }`}
+                  data-testid={`dub-lang-${l.id}`}
+                >
+                  <div className="font-medium">{l.label}</div>
+                  <div className="text-[10px] opacity-70">{l.native}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-2 mb-4">
+            <input
+              className="input-field text-sm"
+              value={customLang}
+              onChange={(e) => setCustomLang(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addCustom()}
+              placeholder="Add any language (e.g. Yoruba, Māori, Sanskrit)…"
+              data-testid="dub-custom-input"
+            />
+            <button className="btn-ghost text-xs" onClick={addCustom} data-testid="dub-add-custom">
+              Add
+            </button>
+          </div>
+
+          {selected.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              {selected.map((l) => (
+                <span key={l} className="pill pill-gold flex items-center gap-1">
+                  {l}
+                  <button
+                    onClick={() => setSelected(selected.filter((x) => x !== l))}
+                    className="hover:text-red-300"
+                    data-testid={`dub-remove-${l}`}
+                    disabled={dubJob?.running}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <button
+            className="btn-gold w-full justify-center"
+            onClick={startDub}
+            disabled={starting || dubJob?.running || selected.length === 0}
+            data-testid="dub-start-btn"
+          >
+            {(starting || dubJob?.running) ? <Spinner /> : <Rocket className="w-4 h-4" />}
+            {dubJob?.running ? `Dubbing… ${dubPercent}%` : `Render ${selected.length || "N"} language${selected.length === 1 ? "" : "s"}`}
+          </button>
+
+          {dubJob && (dubJob.running || dubJob.total > 0) && (
+            <div className="mt-4" data-testid="dub-progress">
+              <div className="flex items-center justify-between text-xs mb-2">
+                <span className="text-white/60 font-mono">{dubJob.current || "—"}</span>
+                <span className="text-white/50 font-mono">{dubJob.completed}/{dubJob.total}</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-gold to-yellow-300 transition-all duration-500" style={{ width: `${dubPercent}%` }} />
+              </div>
+              {dubJob.errors && dubJob.errors.length > 0 && (
+                <div className="mt-3 text-[11px] font-mono text-red-300/70 max-h-24 overflow-y-auto">
+                  {dubJob.errors.slice(0, 5).map((e, i) => <div key={i}>{e}</div>)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {dubs.length > 0 && (
+            <div className="mt-6" data-testid="dub-results">
+              <div className="overline mb-3">Your dubs</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {dubs.map((d) => (
+                  <div key={d.language} className="rounded-md border border-white/10 bg-black/40 p-3" data-testid={`dub-item-${d.language}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-display text-lg">{d.language}</div>
+                        <div className="text-[10px] text-white/40 uppercase tracking-widest">
+                          {d.size_mb} MB · {new Date(d.created_at).toLocaleDateString()}
+                        </div>
+                      </div>
+                      <Pill tone="gold">MP4 + SRT</Pill>
+                    </div>
+                    <video
+                      src={`${process.env.REACT_APP_BACKEND_URL}/api/projects/${project.id}/dubs/${encodeURIComponent(d.language)}/film?user_id=${userId}`}
+                      controls
+                      className="w-full mt-3 rounded"
+                    />
+                    <div className="grid grid-cols-2 gap-2 mt-3">
+                      <a
+                        className="btn-ghost text-xs justify-center"
+                        href={`${process.env.REACT_APP_BACKEND_URL}/api/projects/${project.id}/dubs/${encodeURIComponent(d.language)}/film?user_id=${userId}`}
+                        download
+                        data-testid={`dub-download-${d.language}`}
+                      >
+                        <Download className="w-3 h-3" /> MP4
+                      </a>
+                      <a
+                        className="btn-ghost text-xs justify-center"
+                        href={`${process.env.REACT_APP_BACKEND_URL}/api/projects/${project.id}/subtitles?language=${encodeURIComponent(d.language)}`}
+                        download
+                        data-testid={`dub-srt-${d.language}`}
+                      >
+                        <Subtitles className="w-3 h-3" /> SRT
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 };
