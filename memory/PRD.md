@@ -256,3 +256,17 @@ All 3 tiles autoplaying: Ramayan @ 6.95s (Scene 1 → 2 transition visible), Sho
 python3 /app/backend/scripts/gen_ramayan_demo.py
 ```
 overwrites the stock-imagery version with a fully AI-generated one.
+
+## Update (2026-07-07 · Real AI-generated Ramayan demo)
+### Live on homepage
+User topped up Universal Key budget. Ran the full production pipeline:
+- **Nano Banana** painted 3 period-authentic scenes (Rama+Lakshman entering Janakpuri; Sita+companions in the royal garden; the first-glance moment)
+- **OpenAI TTS onyx** narrated all 3 scenes in Hindi Devanagari
+- **Ken-Burns** animated each still, muxed with narration, concatenated with soft SRT
+- Output: `demo_ramayan.mp4` (1.9 MB) + `.webm` (3.4 MB) + poster JPG
+
+### Verified in-browser
+Playing at t=8.45s showing Sita Mata in emerald sari with companions in Janakpuri garden. Duration 18.09s, `error: null`, `paused: false`.
+
+### Traditional names on-screen
+Character names in the narration Hindi: "प्रभु राम" (Lord Rama), "माता सीता" (Mother Sita), "लक्ष्मण" (Lakshmana) — public-domain traditional names. Visual designs are original Nano Banana renderings (period-authentic silks, jewelry, palace architecture) — no infringement of any modern film/TV/comic depiction.
