@@ -173,3 +173,25 @@ Anonymous (no login). `EMERGENT_LLM_KEY` and `STRIPE_API_KEY=sk_test_emergent` a
 - 2 `<video>` elements render, both playable (currentTime advances)
 - All data-testids: `demo-showcase`, `demo-workflow`, `demo-showcase-video`, `demo-workflow-video`, `nav-demo`, `demo-cta`
 - Landing lints clean, zero JS console errors
+
+## Bugfix (2026-07-07 · Demo videos)
+Three root-cause bugs prevented the demo videos from playing in real browsers:
+
+1. **Backend: `Content-Disposition: attachment` header** — `FileResponse(filename=...)` was forcing download instead of inline `<video>` playback. **Fix**: removed the `filename=` param on `/api/storage/{filename}` for inline playback.
+
+2. **Backend: HTTP 405 on HEAD requests** — `@api.get()` only accepts GET; browsers issue HEAD before playing videos. **Fix**: changed to `@api.api_route(methods=["GET","HEAD"])`.
+
+3. **Backend: no HTTP Range support** — Starlette's `FileResponse` inside a route handler doesn't handle Range requests; served full 200 with 348 KB even when browser asked for the first 1 KB. Chrome refuses to play videos without proper `206 Partial Content` + `Accept-Ranges: bytes`. **Fix**: wrote a manual `_range_response()` helper that parses `Range` headers, streams the requested byte range with 206 Partial Content, and advertises `Accept-Ranges: bytes` on every response.
+
+4. **Frontend: single-codec source** — headless Chromium in tests (and Firefox in production) lacks the proprietary H.264 codec. **Fix**: `gen_demos.py` now produces both MP4 (H.264+AAC, Constrained Baseline for max compat) AND WebM (VP9+Opus) for each demo. Frontend `<video>` uses two `<source>` tags — WebM first, MP4 fallback.
+
+### Verified in-browser (Playwright)
+- `readyState: 4` (HAVE_ENOUGH_DATA), `duration: 18.008` / `16.008` seconds, `videoWidth: 1280`, `videoHeight: 720`
+- Hover triggers `play()`, currentTime advances (showcase at 4.51s = "Any language."; workflow at 6.02s = "03 CAST")
+- Backend serves `HTTP 206 Partial Content` with `Content-Range: bytes 0-1023/348011`
+- Zero JS console errors, zero video errors
+
+### Files changed
+- /app/backend/server.py — `_range_response()`, `_media_type()`, `/storage/{filename}` GET+HEAD
+- /app/backend/scripts/gen_demos.py — dual MP4+WebM output, baseline profile, silent audio track
+- /app/frontend/src/pages/Landing.jsx — `<source>` fallback (WebM → MP4)

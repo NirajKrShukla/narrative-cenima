@@ -27,6 +27,7 @@ const inputs = [
 function DemoTile({ src, title, caption, testid }) {
   const ref = React.useRef(null);
   const [playing, setPlaying] = React.useState(false);
+  const webmSrc = src.replace(".mp4", ".webm");
 
   const onEnter = () => {
     const v = ref.current;
@@ -61,14 +62,17 @@ function DemoTile({ src, title, caption, testid }) {
       <div className="aspect-video bg-black relative">
         <video
           ref={ref}
-          src={src}
           muted
           loop
           playsInline
           preload="auto"
           className="w-full h-full object-cover"
           data-testid={`${testid}-video`}
-        />
+        >
+          {/* WebM first for Chromium/Firefox, MP4 fallback for Safari/iOS/Edge */}
+          <source src={webmSrc} type="video/webm" />
+          <source src={src} type="video/mp4" />
+        </video>
         {!playing && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="w-16 h-16 rounded-full bg-gold/90 flex items-center justify-center shadow-goldGlow transition-transform group-hover:scale-110">

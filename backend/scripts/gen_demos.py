@@ -81,12 +81,34 @@ def build_showcase():
 
     filter_chain = ",".join(fx) + ",format=yuv420p"
     bg = f"color=c={BLACK}:s={W}x{H}:d=18:r={FPS}"
+    # Add a silent audio track for maximum browser compatibility (some browsers reject video-only MP4)
     cmd = (
-        f'ffmpeg -y -f lavfi -i "{bg}" -vf "{filter_chain}" '
-        f'-t 18 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 22 -movflags +faststart "{out}"'
+        f'ffmpeg -y '
+        f'-f lavfi -i "{bg}" '
+        f'-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" '
+        f'-vf "{filter_chain}" '
+        f'-t 18 '
+        f'-c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -preset veryfast -crf 22 '
+        f'-c:a aac -b:a 96k -shortest '
+        f'-movflags +faststart '
+        f'"{out}"'
     )
     run(cmd)
+    # Also produce a WebM (VP9 + Opus) fallback for Chromium-based browsers without H.264
+    out_webm = str(out).replace(".mp4", ".webm")
+    cmd_webm = (
+        f'ffmpeg -y '
+        f'-f lavfi -i "{bg}" '
+        f'-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" '
+        f'-vf "{filter_chain}" '
+        f'-t 18 '
+        f'-c:v libvpx-vp9 -b:v 0 -crf 32 -deadline realtime -cpu-used 8 '
+        f'-c:a libopus -b:a 64k -shortest '
+        f'"{out_webm}"'
+    )
+    run(cmd_webm)
     print(f"OK: {out}  ({out.stat().st_size/1024:.0f} KB)")
+    print(f"OK: {out_webm}  ({os.path.getsize(out_webm)/1024:.0f} KB)")
 
 
 def build_workflow():
@@ -140,11 +162,32 @@ def build_workflow():
     filter_chain = ",".join(fx) + ",format=yuv420p"
     bg = f"color=c={BLACK}:s={W}x{H}:d={total}:r={FPS}"
     cmd = (
-        f'ffmpeg -y -f lavfi -i "{bg}" -vf "{filter_chain}" '
-        f'-t {total} -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 22 -movflags +faststart "{out}"'
+        f'ffmpeg -y '
+        f'-f lavfi -i "{bg}" '
+        f'-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" '
+        f'-vf "{filter_chain}" '
+        f'-t {total} '
+        f'-c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -preset veryfast -crf 22 '
+        f'-c:a aac -b:a 96k -shortest '
+        f'-movflags +faststart '
+        f'"{out}"'
     )
     run(cmd)
+    # WebM fallback
+    out_webm = str(out).replace(".mp4", ".webm")
+    cmd_webm = (
+        f'ffmpeg -y '
+        f'-f lavfi -i "{bg}" '
+        f'-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" '
+        f'-vf "{filter_chain}" '
+        f'-t {total} '
+        f'-c:v libvpx-vp9 -b:v 0 -crf 32 -deadline realtime -cpu-used 8 '
+        f'-c:a libopus -b:a 64k -shortest '
+        f'"{out_webm}"'
+    )
+    run(cmd_webm)
     print(f"OK: {out}  ({out.stat().st_size/1024:.0f} KB)")
+    print(f"OK: {out_webm}  ({os.path.getsize(out_webm)/1024:.0f} KB)")
 
 
 if __name__ == "__main__":

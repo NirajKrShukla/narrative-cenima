@@ -15,7 +15,8 @@ load_dotenv()
 
 from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi import Request
 from pydantic import BaseModel, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -1363,8 +1364,102 @@ async def voice_preview(voice: str = "onyx", model: str = "tts-1", language: str
     return FileResponse(str(path), media_type="audio/mpeg", filename=fname)
 
 
-@api.get("/storage/{filename}")
-async def get_asset(filename: str):
+def _media_type(filename: str) -> str:
+    lower = filename.lower()
+    if lower.endswith(".mp4"):
+        return "video/mp4"
+    if lower.endswith(".webm"):
+        return "video/webm"
+    if lower.endswith(".mp3"):
+        return "audio/mpeg"
+    if lower.endswith(".png"):
+        return "image/png"
+    if lower.endswith(".jpg") or lower.endswith(".jpeg"):
+        return "image/jpeg"
+    if lower.endswith(".srt"):
+        return "application/x-subrip"
+    return "application/octet-stream"
+
+
+def _range_response(path: Path, media: str, request: Request) -> Response:
+    """Serve a file with HTTP Range support (required for HTML5 <video> to play reliably).
+    Handles the Range header and returns 206 Partial Content when present, else 200 with full file."""
+    file_size = path.stat().st_size
+    range_header = request.headers.get("range") or request.headers.get("Range")
+
+    if request.method == "HEAD":
+        return Response(
+            status_code=200,
+            headers={
+                "Content-Type": media,
+                "Content-Length": str(file_size),
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+
+    if range_header:
+        # Parse "bytes=start-end"
+        try:
+            units, _, rng = range_header.partition("=")
+            if units.strip().lower() == "bytes":
+                start_str, _, end_str = rng.strip().partition("-")
+                start = int(start_str) if start_str else 0
+                end = int(end_str) if end_str else file_size - 1
+                if start < 0 or start >= file_size:
+                    raise ValueError("start out of range")
+                end = min(end, file_size - 1)
+                length = end - start + 1
+
+                def stream():
+                    with open(path, "rb") as f:
+                        f.seek(start)
+                        remaining = length
+                        chunk_size = 64 * 1024
+                        while remaining > 0:
+                            data = f.read(min(chunk_size, remaining))
+                            if not data:
+                                break
+                            remaining -= len(data)
+                            yield data
+
+                return StreamingResponse(
+                    stream(),
+                    status_code=206,
+                    media_type=media,
+                    headers={
+                        "Content-Range": f"bytes {start}-{end}/{file_size}",
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(length),
+                        "Cache-Control": "public, max-age=3600",
+                    },
+                )
+        except Exception:
+            # Fall through to full response
+            pass
+
+    # No Range header (or bad one) — full body with Accept-Ranges so browsers can retry with Range
+    def full_stream():
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+    return StreamingResponse(
+        full_stream(),
+        media_type=media,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+@api.api_route("/storage/{filename}", methods=["GET", "HEAD"])
+async def get_asset(filename: str, request: Request):
     # Basic path traversal protection
     if "/" in filename or ".." in filename:
         raise HTTPException(400, "Invalid filename")
@@ -1374,19 +1469,7 @@ async def get_asset(filename: str):
     path = STORAGE_DIR / filename
     if not path.exists():
         raise HTTPException(404, "File not found")
-    # infer media type
-    lower = filename.lower()
-    if lower.endswith(".mp4"):
-        media = "video/mp4"
-    elif lower.endswith(".mp3"):
-        media = "audio/mpeg"
-    elif lower.endswith(".png"):
-        media = "image/png"
-    elif lower.endswith(".jpg") or lower.endswith(".jpeg"):
-        media = "image/jpeg"
-    else:
-        media = "application/octet-stream"
-    return FileResponse(str(path), media_type=media, filename=filename)
+    return _range_response(path, _media_type(filename), request)
 
 
 # ----------------------------------------------------------------------------
