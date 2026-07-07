@@ -80,3 +80,24 @@ Anonymous (no login). `EMERGENT_LLM_KEY` and `STRIPE_API_KEY=sk_test_emergent` a
 - Analyze prompt to Claude now issues an explicit `LANGUAGE OVERRIDE` instruction with native-script guidance
 - OpenAI TTS voices are multi-lingual by design — same voice speaks any language driven by the narration text
 - Landing page copy updated to advertise 100+ world languages
+
+## Update (2026-07-07 · Per-scene narration override + progress polish)
+### Per-scene narration language override
+- Scene model gains optional `language` field
+- **PATCH /api/projects/{pid}/scenes/{sid}/narration** — accepts `narration` (text override) and/or `language` (translate existing text to that language). Empty body → 400.
+- **POST /api/projects/{pid}/scenes/{sid}/narration** priority chain: request body `language` > scene `language` > project `language_hint`. Auto-translates + persists if scene stored a different language.
+- New helper `ai_services.translate_narration()` — uses **Claude Haiku 4.5** for fast, cinematic-tone translation with native script (Devanagari, Arabic, Cyrillic, Han, Kana etc.). Graceful fallback to original text on model refusal.
+- Frontend `SceneNarrationEditor` sub-component in Scenes tab: inline edit textarea + language dropdown (97+ langs) + Translate + Save buttons.
+
+### Batch progress UI polish
+- New `BatchProgressCard` with:
+  - Animated status header (pulsing dot when running, step icon per action)
+  - Real-time elapsed timer (mm:ss)
+  - 2-digit percent, X/Y step count
+  - Per-scene grid (2/4/6 cols responsive) with gold glow on current scene
+  - Step-dot indicators per scene: image · audio · video · final
+- Framer-motion smooth progress-bar animation with gradient (gold → yellow)
+
+## Tested (iteration_3)
+- 44/44 tests pass — 22 new + 22 regression
+- Verified: PATCH edit, PATCH translate to Hindi with native script, chained language priority, translation persistence, audio_file/final_file cleared on text change, arbitrary language names accepted, all 3 previous regressions still fixed
