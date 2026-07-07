@@ -217,3 +217,20 @@ Closing beats: "An AiPillu original short — A reimagining of the Ramayan — C
 
 ## Note on Emergent LLM Key
 - Universal Key budget currently exceeded ($1.07/$1.00). Please top up in Profile → Universal Key → Add Balance to unlock: Nano Banana image generation, OpenAI TTS, Whisper, Claude analyze/translate, Sora 2 video, and the full AI Ramayan demo (`gen_ramayan_demo.py`).
+
+## Bugfix (2026-07-07 · Demo videos playing for ALL end users)
+Previously the demo tiles only played on `mouseenter` — which is a desktop-only event. On touch devices (phones, tablets) videos never played and the tile showed a black rectangle with a static gold play button, looking broken.
+
+### Fixes
+1. **`autoPlay muted loop playsInline`** on every `<video>` — browser-safe (muted+inline autoplay is universally allowed on iOS Safari, Android Chrome, desktop Firefox/Safari/Edge/Chrome). Videos start playing the instant the page renders, no interaction needed.
+2. **Poster JPGs**: extracted at t=2.5s via `ffmpeg -ss 2.5 -frames:v 1 -q:v 3` for every demo (`demo_*_poster.jpg`, ~27-39 KB each). Displayed while the video is still buffering — so users NEVER see a black rectangle.
+3. **Removed the hover-dependent state** and the giant central play button. Replaced with a small subtle "TAP FOR SOUND & FULLSCREEN" pill in the bottom-right corner — signals interactivity without covering the content.
+4. **Copy update**: "Plays silently on any device — tap for sound and fullscreen" (previously said "autoplays on hover" which was misleading).
+
+### Verified in-browser (Playwright, headless Chromium)
+All 3 videos: `readyState: 4`, `currentTime: 4.95s`, `paused: false`, `autoplay: true`, `muted: true`, `error: null`
+- Ramayan: 22.01s duration, playing WebM
+- Showcase: 18.01s duration, playing WebM
+- Workflow: 16.01s duration, playing WebM
+
+Zero JS console errors. Real content visible in every tile without any user interaction.

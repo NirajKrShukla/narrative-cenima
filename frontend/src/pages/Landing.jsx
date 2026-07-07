@@ -23,29 +23,22 @@ const inputs = [
   { icon: Wand2, label: "Pasted Script", note: "Type or paste directly" },
 ];
 
-// A single demo-video tile with hover autoplay and click-to-fullscreen
+// A single demo-video tile. Autoplays muted+loop on all devices (browser-safe),
+// tap/click expands to fullscreen with sound.
 function DemoTile({ src, title, caption, testid }) {
   const ref = React.useRef(null);
-  const [playing, setPlaying] = React.useState(false);
   const webmSrc = src.replace(".mp4", ".webm");
+  const posterSrc = src.replace(".mp4", "_poster.jpg");
 
-  const onEnter = () => {
-    const v = ref.current;
-    if (!v) return;
-    v.play().then(() => setPlaying(true)).catch(() => {});
-  };
-  const onLeave = () => {
-    const v = ref.current;
-    if (!v) return;
-    v.pause();
-    setPlaying(false);
-  };
   const onClick = () => {
     const v = ref.current;
     if (!v) return;
-    if (v.requestFullscreen) v.requestFullscreen();
     v.muted = false;
-    v.currentTime = 0;
+    if (v.requestFullscreen) {
+      v.requestFullscreen().catch(() => {});
+    } else if (v.webkitEnterFullscreen) {
+      v.webkitEnterFullscreen();
+    }
     v.play().catch(() => {});
   };
 
@@ -54,33 +47,32 @@ function DemoTile({ src, title, caption, testid }) {
       whileHover={{ y: -4 }}
       transition={{ type: "spring", stiffness: 300, damping: 22 }}
       className="group relative rounded-lg overflow-hidden border border-white/10 bg-black cursor-pointer"
-      onMouseEnter={onEnter}
-      onMouseLeave={onLeave}
       onClick={onClick}
       data-testid={testid}
     >
       <div className="aspect-video bg-black relative">
         <video
           ref={ref}
+          poster={posterSrc}
           muted
           loop
+          autoPlay
           playsInline
           preload="auto"
           className="w-full h-full object-cover"
           data-testid={`${testid}-video`}
         >
-          {/* WebM first for Chromium/Firefox, MP4 fallback for Safari/iOS/Edge */}
           <source src={webmSrc} type="video/webm" />
           <source src={src} type="video/mp4" />
+          Your browser does not support HTML5 video.
         </video>
-        {!playing && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-16 h-16 rounded-full bg-gold/90 flex items-center justify-center shadow-goldGlow transition-transform group-hover:scale-110">
-              <Play className="w-6 h-6 text-black fill-current ml-1" />
-            </div>
+        {/* Small fullscreen hint that fades on hover */}
+        <div className="absolute bottom-3 right-3 opacity-70 group-hover:opacity-100 transition pointer-events-none">
+          <div className="px-2.5 py-1 rounded bg-black/60 border border-white/10 text-[10px] tracking-widest uppercase text-white/80 flex items-center gap-1.5">
+            <Play className="w-3 h-3 text-gold fill-current" />
+            Tap for sound &amp; fullscreen
           </div>
-        )}
-        <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black to-transparent pointer-events-none" />
+        </div>
       </div>
       <div className="p-5 border-t border-white/5">
         <div className="font-display text-xl">{title}</div>
@@ -220,7 +212,7 @@ export default function Landing() {  return (
             Three short demos — <span className="text-gold">Ramayan, the mood, the process</span>.
           </h2>
           <p className="text-white/60 mt-4 max-w-2xl">
-            Each is under 25 seconds. Autoplays on hover, loops silently, and works on every phone.
+            Each is under 25 seconds. Plays silently on any device — tap for sound and fullscreen.
           </p>
 
           <div className="mt-14 grid grid-cols-1 lg:grid-cols-3 gap-8">
