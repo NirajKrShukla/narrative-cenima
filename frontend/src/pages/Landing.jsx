@@ -1,7 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Film, Sparkles, FileText, Mic, Link2, PlayCircle, ShieldCheck, Wand2 } from "lucide-react";
+import { Film, Sparkles, FileText, Mic, Link2, PlayCircle, ShieldCheck, Wand2, Play } from "lucide-react";
 
 const HERO_BG =
   "https://images.pexels.com/photos/18415806/pexels-photo-18415806.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940";
@@ -23,8 +23,70 @@ const inputs = [
   { icon: Wand2, label: "Pasted Script", note: "Type or paste directly" },
 ];
 
-export default function Landing() {
+// A single demo-video tile with hover autoplay and click-to-fullscreen
+function DemoTile({ src, title, caption, testid }) {
+  const ref = React.useRef(null);
+  const [playing, setPlaying] = React.useState(false);
+
+  const onEnter = () => {
+    const v = ref.current;
+    if (!v) return;
+    v.play().then(() => setPlaying(true)).catch(() => {});
+  };
+  const onLeave = () => {
+    const v = ref.current;
+    if (!v) return;
+    v.pause();
+    setPlaying(false);
+  };
+  const onClick = () => {
+    const v = ref.current;
+    if (!v) return;
+    if (v.requestFullscreen) v.requestFullscreen();
+    v.muted = false;
+    v.currentTime = 0;
+    v.play().catch(() => {});
+  };
+
   return (
+    <motion.div
+      whileHover={{ y: -4 }}
+      transition={{ type: "spring", stiffness: 300, damping: 22 }}
+      className="group relative rounded-lg overflow-hidden border border-white/10 bg-black cursor-pointer"
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+      onClick={onClick}
+      data-testid={testid}
+    >
+      <div className="aspect-video bg-black relative">
+        <video
+          ref={ref}
+          src={src}
+          muted
+          loop
+          playsInline
+          preload="auto"
+          className="w-full h-full object-cover"
+          data-testid={`${testid}-video`}
+        />
+        {!playing && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-16 h-16 rounded-full bg-gold/90 flex items-center justify-center shadow-goldGlow transition-transform group-hover:scale-110">
+              <Play className="w-6 h-6 text-black fill-current ml-1" />
+            </div>
+          </div>
+        )}
+        <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black to-transparent pointer-events-none" />
+      </div>
+      <div className="p-5 border-t border-white/5">
+        <div className="font-display text-xl">{title}</div>
+        <p className="text-sm text-white/60 mt-1.5">{caption}</p>
+      </div>
+    </motion.div>
+  );
+}
+
+export default function Landing() {  return (
     <div className="relative overflow-x-hidden">
       {/* Nav */}
       <nav className="fixed top-0 left-0 right-0 z-40 glass" data-testid="nav-header">
@@ -36,6 +98,7 @@ export default function Landing() {
             </span>
           </Link>
           <div className="hidden md:flex items-center gap-8 text-sm text-white/70">
+            <a href="#demo" className="hover:text-white transition" data-testid="nav-demo">Watch demo</a>
             <a href="#how" className="hover:text-white transition" data-testid="nav-how">How it works</a>
             <a href="#inputs" className="hover:text-white transition" data-testid="nav-inputs">Inputs</a>
             <a href="#safety" className="hover:text-white transition" data-testid="nav-safety">Safety</a>
@@ -139,6 +202,42 @@ export default function Landing() {
                 <p className="text-sm text-white/60 mt-3 leading-relaxed">{s.d}</p>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Demo videos */}
+      <section id="demo" className="py-24 relative">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="overline mb-4 flex items-center gap-2">
+            <Play className="w-3.5 h-3.5 text-gold" /> See it in action
+          </div>
+          <h2 className="font-display text-4xl sm:text-5xl tracking-tight max-w-3xl leading-tight">
+            Two short demos — <span className="text-gold">one for the mood</span>, one for the process.
+          </h2>
+          <p className="text-white/60 mt-4 max-w-2xl">
+            Both are less than 20 seconds. Autoplays on hover, loops silently, and works on every phone.
+          </p>
+
+          <div className="mt-14 grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <DemoTile
+              testid="demo-showcase"
+              title="The Showreel"
+              caption="A cinematic teaser for the studio's soul — every story, every language, one screen."
+              src={`${process.env.REACT_APP_BACKEND_URL}/api/storage/demo_showcase.mp4`}
+            />
+            <DemoTile
+              testid="demo-workflow"
+              title="Six Steps to a Film"
+              caption="Ingest → analyze → cast → animate → narrate → share. All auto-piloted."
+              src={`${process.env.REACT_APP_BACKEND_URL}/api/storage/demo_workflow.mp4`}
+            />
+          </div>
+
+          <div className="mt-10 text-center">
+            <Link to="/studio" className="btn-gold" data-testid="demo-cta">
+              <Film className="w-4 h-4" /> Make your own — start free
+            </Link>
           </div>
         </div>
       </section>
