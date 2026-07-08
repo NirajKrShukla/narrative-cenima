@@ -1,7 +1,8 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Film, Sparkles, FileText, Mic, Link2, PlayCircle, ShieldCheck, Wand2, Play } from "lucide-react";
+import { Film, Sparkles, FileText, Mic, Link2, PlayCircle, ShieldCheck, Wand2, Play, LogIn, LogOut, UserCircle2 } from "lucide-react";
+import { useAuth } from "../lib/auth";
 
 const HERO_BG =
   "https://images.pexels.com/photos/18415806/pexels-photo-18415806.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940";
@@ -82,7 +83,9 @@ function DemoTile({ src, title, caption, testid }) {
   );
 }
 
-export default function Landing() {  return (
+export default function Landing() {
+  const { user, isAuthenticated, logout } = useAuth();
+  return (
     <div className="relative overflow-x-hidden">
       {/* Nav */}
       <nav className="fixed top-0 left-0 right-0 z-40 glass" data-testid="nav-header">
@@ -100,9 +103,41 @@ export default function Landing() {  return (
             <a href="#safety" className="hover:text-white transition" data-testid="nav-safety">Safety</a>
             <Link to="/gallery" className="hover:text-white transition" data-testid="nav-gallery">Gallery</Link>
           </div>
-          <Link to="/studio" className="btn-gold text-sm" data-testid="nav-open-studio">
-            Open Studio <PlayCircle className="w-4 h-4" />
-          </Link>
+          <div className="flex items-center gap-3">
+            {isAuthenticated ? (
+              <>
+                <div className="hidden sm:flex items-center gap-2 text-sm text-white/70" data-testid="nav-user-badge">
+                  {user?.picture ? (
+                    <img src={user.picture} alt="" className="w-6 h-6 rounded-full border border-white/20" />
+                  ) : (
+                    <UserCircle2 className="w-5 h-5 text-gold" />
+                  )}
+                  <span className="max-w-[140px] truncate">{user?.name || user?.email}</span>
+                </div>
+                <Link to="/studio" className="btn-gold text-sm" data-testid="nav-open-studio">
+                  Open Studio <PlayCircle className="w-4 h-4" />
+                </Link>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="btn-ghost text-sm"
+                  data-testid="nav-logout"
+                  title="Sign out"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </>
+            ) : (
+              <>
+                <Link to="/login" className="btn-ghost text-sm" data-testid="nav-login">
+                  <LogIn className="w-4 h-4" /> Sign in
+                </Link>
+                <Link to="/login" state={{ from: "/studio" }} className="btn-gold text-sm" data-testid="nav-open-studio">
+                  Open Studio <PlayCircle className="w-4 h-4" />
+                </Link>
+              </>
+            )}
+          </div>
         </div>
       </nav>
 

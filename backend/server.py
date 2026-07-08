@@ -13,7 +13,7 @@ from typing import Optional, Any
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi import Request
@@ -24,6 +24,7 @@ import ingestion
 import ai_services
 import assembly
 import payments
+import auth
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/app/backend/storage"))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,6 +40,10 @@ db = client[DB_NAME]
 projects_col = db["projects"]
 payments_col = db["payment_transactions"]
 users_col = db["users"]
+sessions_col = db["user_sessions"]
+
+# Bind DB collections to the auth module
+auth.bind_collections(users_col, sessions_col)
 
 
 def now_iso() -> str:
@@ -137,19 +142,35 @@ def project_public(doc: dict) -> dict:
     return doc
 
 
+async def _require_owned_project(pid: str, user: dict) -> dict:
+    """Fetch project and ensure the current user owns it (admins bypass).
+    Legacy projects (no owner_email) are treated as admin-only."""
+    doc = await projects_col.find_one({"id": pid})
+    if not doc:
+        raise HTTPException(404, "Project not found")
+    if user.get("role") == "admin":
+        return doc
+    owner = doc.get("owner_email")
+    if not owner or owner.lower() != (user.get("email") or "").lower():
+        raise HTTPException(403, "You don't own this project")
+    return doc
+
+
 @api.get("/health")
 async def health():
     return {"status": "ok", "time": now_iso()}
 
 
 @api.post("/projects")
-async def create_project(body: ProjectCreate):
+async def create_project(body: ProjectCreate, user: dict = Depends(auth.get_current_user)):
     pid = uuid.uuid4().hex[:12]
     doc = {
         "id": pid,
         "title": body.title or "Untitled Film",
         "created_at": now_iso(),
         "updated_at": now_iso(),
+        "owner_email": user["email"],
+        "owner_user_id": user["user_id"],
         "source_text": "",
         "source_type": None,
         "source_meta": {},
@@ -182,8 +203,9 @@ async def create_project(body: ProjectCreate):
 
 
 @api.get("/projects")
-async def list_projects():
-    docs = await projects_col.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+async def list_projects(user: dict = Depends(auth.get_current_user)):
+    query = {} if user.get("role") == "admin" else {"owner_email": user["email"]}
+    docs = await projects_col.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
     # Return light list
     light = []
     for d in docs:
@@ -199,15 +221,15 @@ async def list_projects():
 
 
 @api.get("/projects/{pid}")
-async def get_project(pid: str):
-    doc = await projects_col.find_one({"id": pid}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Project not found")
+async def get_project(pid: str, user: dict = Depends(auth.get_current_user)):
+    doc = await _require_owned_project(pid, user)
+    doc.pop("_id", None)
     return doc
 
 
 @api.delete("/projects/{pid}")
-async def delete_project(pid: str):
+async def delete_project(pid: str, user: dict = Depends(auth.get_current_user)):
+    await _require_owned_project(pid, user)
     res = await projects_col.delete_one({"id": pid})
     if res.deleted_count == 0:
         raise HTTPException(404, "Project not found")
@@ -1571,18 +1593,20 @@ async def get_asset(filename: str, request: Request):
 # Paywall / Unlock / Sharing
 # ----------------------------------------------------------------------------
 
-async def _user_has_free_tier_used(user_id: str) -> bool:
-    """A user gets ONE free ≤20MB film. After that, everything must be paid."""
-    if not user_id:
+async def _user_has_free_tier_used(email: str) -> bool:
+    """A user gets ONE free ≤20MB film. After that, everything must be paid.
+    Keyed by the authenticated user's email so the tier survives browser resets."""
+    if not email:
         return True
     count = await projects_col.count_documents(
-        {"free_granted": True, "created_by": user_id}
+        {"free_granted": True, "owner_email": email.lower()}
     )
     return count > 0
 
 
 @api.get("/projects/{pid}/unlock-status")
-async def unlock_status(pid: str, user_id: str = ""):
+async def unlock_status(pid: str, request: Request):
+    user = request.state.user
     doc = await projects_col.find_one({"id": pid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Project not found")
@@ -1593,7 +1617,7 @@ async def unlock_status(pid: str, user_id: str = ""):
     already_unlocked = bool(doc.get("paid") or doc.get("free_granted"))
     size_bytes = payments.get_film_size_bytes(final_film)
 
-    # Determine free eligibility
+    # Determine free eligibility (per-account, keyed by email)
     free_eligible = False
     reason = ""
     if not final_film:
@@ -1603,12 +1627,12 @@ async def unlock_status(pid: str, user_id: str = ""):
         free_eligible = False
     else:
         under_limit = size_bytes <= payments.FREE_TIER_MAX_BYTES
-        used_free = await _user_has_free_tier_used(user_id)
+        used_free = await _user_has_free_tier_used(user["email"])
         if under_limit and not used_free:
             free_eligible = True
             reason = "Free tier: first film under 20 MB"
         elif under_limit and used_free:
-            reason = "Free tier already used — payment required"
+            reason = "Free tier already used for this account — payment required"
         else:
             reason = "Film exceeds 20 MB — payment required"
 
@@ -1627,8 +1651,9 @@ async def unlock_status(pid: str, user_id: str = ""):
 
 
 @api.post("/projects/{pid}/claim-free")
-async def claim_free(pid: str, body: CheckoutRequest):
+async def claim_free(pid: str, body: CheckoutRequest, request: Request):
     """Consume the user's one free unlock, if eligible."""
+    user = request.state.user
     doc = await projects_col.find_one({"id": pid})
     if not doc:
         raise HTTPException(404, "Project not found")
@@ -1642,14 +1667,15 @@ async def claim_free(pid: str, body: CheckoutRequest):
     if size > payments.FREE_TIER_MAX_BYTES:
         raise HTTPException(402, "Film exceeds 20 MB free tier — payment required")
 
-    if await _user_has_free_tier_used(body.user_id):
-        raise HTTPException(402, "Free tier already used for this browser — payment required")
+    if await _user_has_free_tier_used(user["email"]):
+        raise HTTPException(402, "Free tier already used for this account — payment required")
 
     await projects_col.update_one(
         {"id": pid},
         {"$set": {
             "free_granted": True,
-            "created_by": body.user_id,
+            "created_by": user["user_id"],
+            "owner_email": user["email"],
             "unlocked_at": now_iso(),
         }},
     )
@@ -1779,8 +1805,8 @@ async def stripe_webhook(request: __import__("fastapi").Request):
 
 
 @api.get("/projects/{pid}/film")
-async def download_film(pid: str, user_id: str = ""):
-    """Gated download endpoint for the final film."""
+async def download_film(pid: str):
+    """Gated download endpoint for the final film. Auth + ownership enforced by middleware."""
     doc = await projects_col.find_one({"id": pid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Project not found")
@@ -1818,14 +1844,62 @@ async def share_info(pid: str, origin_url: str = ""):
 
 
 app.include_router(api)
+app.include_router(auth.router)
+
+# Public API paths that don't require authentication
+_PUBLIC_API_EXACT = {"/api/health"}
+_PUBLIC_API_PREFIXES = (
+    "/api/auth/",           # login, register, session exchange, refresh, me, logout
+    "/api/storage/",        # demo videos, preview mp3s, scene images (final_film is guarded inside)
+    "/api/webhook/",        # Stripe webhook — verified via signature, not auth
+    "/api/voice-preview",   # public TTS voice sample
+)
+_PROJECT_PATH_RE = re.compile(r"^/api/projects/([a-f0-9]{4,32})(?:/|$)")
+
+
+@app.middleware("http")
+async def _gate_api(request: Request, call_next):
+    path = request.url.path
+    # Only guard /api/*. Everything else (frontend, Kubernetes health) passes through.
+    if path.startswith("/api/"):
+        # Public bypass
+        if path in _PUBLIC_API_EXACT or path.startswith(_PUBLIC_API_PREFIXES):
+            return await call_next(request)
+        # Auth required
+        try:
+            user = await auth.get_current_user(request)
+        except HTTPException as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+        # Ownership on project-scoped paths /api/projects/{pid}/... (admins bypass)
+        m = _PROJECT_PATH_RE.match(path)
+        if m and user.get("role") != "admin":
+            pid = m.group(1)
+            doc = await projects_col.find_one({"id": pid}, {"owner_email": 1, "id": 1})
+            if doc:
+                owner = (doc.get("owner_email") or "").lower()
+                if not owner or owner != (user.get("email") or "").lower():
+                    return JSONResponse({"detail": "You don't own this project"}, status_code=403)
+        request.state.user = user
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",")],
+    allow_origin_regex=".*",
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
+
+
+@app.on_event("startup")
+async def _startup():
+    try:
+        await auth.ensure_indexes(users_col, sessions_col)
+        await auth.seed_admin(users_col)
+    except Exception as e:
+        logger.error(f"Auth startup failed: {e}")
 
 
 @app.on_event("shutdown")

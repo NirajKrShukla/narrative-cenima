@@ -306,3 +306,52 @@ Added a universal rule across all films — each character gets a **unique OpenA
 - P2: Optional: batch-render Krishna-Sudama / Hanuman-Ocean / Shiva-Parvati gallery entries using the same multi-voice pipeline.
 - P3: Real Instagram/YouTube OAuth uploads (deferred — needs 4-8 week app verification).
 - P3: Refactor `Studio.jsx` (~1900 lines) into `/components` folder.
+
+
+## Update (2026-07-07 · Login required for Studio, Gallery, Downloads & Share)
+
+### Auth architecture
+- Two flows on the **same login screen** — user chooses either:
+  1. **Continue with Google** → Emergent-managed OAuth. Backend exchanges the one-time `session_id` at `/api/auth/session` → sets `session_token` httpOnly cookie.
+  2. **Email + Password** → bcrypt hash + PyJWT `access_token` (7d) + `refresh_token` (30d) httpOnly cookies.
+- Unified `get_current_user(request)` accepts EITHER JWT cookie/Bearer OR emergent `session_token`. Both flows write to a single `users` collection keyed by lowercase email; `auth_providers: ["email","google"]` records which methods a user has used.
+- Cookies use `Secure=true, SameSite=none, HttpOnly=true, Path=/` so they work across the emergent preview → API domain.
+
+### Gating (via a single FastAPI middleware, `/api/*` scoped)
+- **Public**: `/api/health`, `/api/auth/*`, `/api/storage/*` (demo videos, images, TTS previews), `/api/webhook/*`, `/api/voice-preview`.
+- **Auth required** (401 for guests): everything else — `/api/projects/*`, `/api/gallery/*`, `/api/tip/*`, `/api/dubs/*`, `/api/checkout/*`, `/api/subtitles/*`.
+- **Ownership required** (403 for non-owner, admin bypass): every `/api/projects/{pid}/…` — enforced in the middleware by looking up `owner_email` from the URL-encoded pid.
+
+### Free-tier tied to account (not browser)
+- `_user_has_free_tier_used(email)` now counts `projects` where `owner_email == user.email && free_granted == True`. Clearing localStorage no longer resets the free unlock.
+- `/claim-free` writes `owner_email` on grant.
+
+### Frontend
+- `AuthProvider` context: `{user, isAuthenticated, loading, login, register, logout, loginWithGoogle, exchangeEmergentSession, checkAuth}`.
+- `Login` page (`/login`): Google button + email/password toggle + register mode. Full data-testids.
+- `AuthCallback` (`/auth/callback`): synchronously reads `#session_id=…`, exchanges it, redirects to `/studio`. Uses `useRef` sentinel to prevent StrictMode double-exchange.
+- `ProtectedRoute` wraps Studio + Gallery routes; redirects to `/login` for guests.
+- `axios.withCredentials = true` so every API call carries cookies.
+- Landing nav gained: **Sign in** button for guests + user badge (avatar/name) + Logout button for authenticated users.
+
+### Data model additions
+- `users`: `{user_id, email(unique), name, picture, role, auth_providers[], password_hash(nullable), created_at}`
+- `user_sessions`: `{user_id, session_token(unique), email, expires_at(TTL index), source:"emergent"}`
+- Existing `projects` docs now include `owner_email` + `owner_user_id` on create.
+
+### Verified
+- **Backend tests: 52 / 52 passing** — added an autouse conftest fixture that (a) monkey-patches raw `requests.*` calls to carry admin session cookies, (b) resets admin's free-tier flag between tests.
+- E2E frontend smoke: Guest → sees demos + "Sign in" nav ✓. Guest visits `/studio` → redirected to `/login` ✓. Register via email → lands on `/studio` with account-created toast ✓. New user starts with empty project list (owner-scoped filter) ✓.
+- Chandrakanta demo (and all `/api/storage/demo_*`) remains public — guest can watch without logging in.
+
+### Test credentials
+Written to `/app/memory/test_credentials.md`:
+- Admin: `admin@aipillu.studio` / `aipilluAdmin@2026`
+
+## Backlog / Next
+- P1: User to click **"Save to Github"** in the chat input to push the repo.
+- P2: **Voice cast panel** in Studio letting users override each character's voice with a preview button.
+- P2 (optional): Batch-render Krishna-Sudama / Hanuman-Ocean / Shiva-Parvati gallery entries using the multi-voice pipeline.
+- P3: Password reset ("forgot password") — the JWT playbook covers it but wasn't yet wired.
+- P3: Real Instagram/YouTube OAuth uploads (deferred — needs 4-8 week app verification).
+- P3: Refactor `Studio.jsx` (~1900 lines) into a `/components` folder.
