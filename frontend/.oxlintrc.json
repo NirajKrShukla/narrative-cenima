@@ -1,0 +1,10 @@
+{
+  "ignorePatterns": [
+    "node_modules/**",
+    "build/**",
+    "dist/**",
+    "coverage/**",
+    "public/**",
+    "**/*.min.js"
+  ]
+}
