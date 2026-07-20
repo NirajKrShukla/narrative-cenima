@@ -64,12 +64,33 @@ class TestLicenseSignupFlow:
     def test_status_before_trial_says_can_start(self, flow):
         r = flow["session"].get(f"{BASE_URL}/api/licenses/status")
         d = r.json()
-        assert d["can_start_trial"] is True
+        # Launch promo auto-grants a license on first register — so this
+        # user already has an active promo license. That means:
+        #   - trial_used stays False (promo is a separate source)
+        #   - can_start_trial is False (they already have an active license)
+        #   - can_create_films is True (courtesy of the promo)
         assert d["trial_used"] is False
-        assert d["can_create_films"] is False
-        assert d["license"] is None
+        assert d["can_create_films"] is True
+        assert d["license"] is not None
+        assert d["license"]["source"] in ("promo", "trial")
 
     def test_start_trial_activates_7_day_license(self, flow):
+        # With the launch promo auto-granted, calling start-trial returns
+        # 409 "already have active license". Simulate the post-promo world
+        # by manually expiring the promo, then retry.
+        import os, pymongo
+        mc = pymongo.MongoClient(os.environ["MONGO_URL"])
+        db = mc[os.environ["DB_NAME"]]
+        me = flow["session"].get(f"{BASE_URL}/api/auth/me").json()
+        db["licenses"].update_many(
+            {"user_id": me["user_id"], "source": "promo"},
+            {"$set": {"expires_at": (
+                __import__("datetime").datetime.utcnow()
+                - __import__("datetime").timedelta(days=1)
+            )}},
+        )
+        mc.close()
+
         r = flow["session"].post(f"{BASE_URL}/api/licenses/start-trial")
         assert r.status_code == 200, r.text
         lic = r.json()["license"]
@@ -105,7 +126,9 @@ class TestLicenseExpiryReadOnly:
     """After license expires, the user should still be able to GET their films but not POST new ones."""
 
     def test_expired_user_gets_402_on_create(self):
-        # Register a fresh user with NO license → creating a project must 402
+        # Register a fresh user, then expire their auto-granted promo license.
+        import time, os
+        from pymongo import MongoClient
         ts = int(time.time_ns() % 10_000_000)
         s = requests.Session()
         s.headers.update({"Content-Type": "application/json"})
@@ -113,6 +136,17 @@ class TestLicenseExpiryReadOnly:
         r = s.post(f"{BASE_URL}/api/auth/register",
                    json={"email": email, "password": "TestPass123!"})
         assert r.status_code == 200
+        # Expire the auto-granted promo
+        me = s.get(f"{BASE_URL}/api/auth/me").json()
+        mc = MongoClient(os.environ["MONGO_URL"])
+        try:
+            import datetime as _dt
+            mc[os.environ["DB_NAME"]]["licenses"].update_many(
+                {"user_id": me["user_id"]},
+                {"$set": {"expires_at": _dt.datetime.utcnow() - _dt.timedelta(days=1)}},
+            )
+        finally:
+            mc.close()
 
         r = s.post(f"{BASE_URL}/api/projects", json={"title": "Should fail"})
         assert r.status_code == 402
@@ -146,3 +180,45 @@ class TestOtpRateLimit:
         r = s.post(f"{BASE_URL}/api/otp/send",
                    json={"channel": "email", "identifier": email})
         assert r.status_code == 429
+
+
+
+class TestLaunchPromo:
+    """Auto-grant 20-day trial on first login/register (PROMO_TRIAL_ACTIVE=true)."""
+
+    def test_register_auto_grants_promo(self):
+        import os, time
+        os.environ["PROMO_TRIAL_ACTIVE"] = "true"
+        ts = int(time.time_ns() % 10_000_000)
+        s = requests.Session()
+        s.headers.update({"Content-Type": "application/json"})
+        email = f"promo_{ts}@aipillu.dev"
+        r = s.post(f"{BASE_URL}/api/auth/register",
+                   json={"email": email, "password": "TestPass123!"})
+        assert r.status_code == 200
+
+        # Should have auto-granted a 20-day promo license
+        d = s.get(f"{BASE_URL}/api/licenses/status").json()
+        assert d["license"] is not None
+        assert d["license"]["source"] == "promo"
+        assert d["license"]["days_remaining"] in (19, 20, 21)
+        assert d["can_create_films"] is True
+
+        # Can create projects immediately with no OTP verification
+        r = s.post(f"{BASE_URL}/api/projects", json={"title": "Promo film"})
+        assert r.status_code == 200
+
+    def test_second_login_does_not_duplicate_promo(self):
+        import time
+        ts = int(time.time_ns() % 10_000_000)
+        s = requests.Session()
+        s.headers.update({"Content-Type": "application/json"})
+        email = f"promo2_{ts}@aipillu.dev"
+        s.post(f"{BASE_URL}/api/auth/register",
+               json={"email": email, "password": "TestPass123!"})
+        s2 = requests.Session()
+        s2.headers.update({"Content-Type": "application/json"})
+        s2.post(f"{BASE_URL}/api/auth/login",
+                json={"email": email, "password": "TestPass123!"})
+        d = s2.get(f"{BASE_URL}/api/licenses/status").json()
+        assert d["license"]["days_remaining"] <= 21

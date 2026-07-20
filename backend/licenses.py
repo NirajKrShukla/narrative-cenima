@@ -43,6 +43,64 @@ PLANS_BY_ID = {p["id"]: p for p in PLANS}
 MAX_LICENSE_DAYS = 365  # hard cap — see spec
 
 
+# ---- Launch promo (env-driven) --------------------------------------------
+def _promo_active() -> bool:
+    return os.environ.get("PROMO_TRIAL_ACTIVE", "").lower() == "true"
+
+
+def _promo_days() -> int:
+    try:
+        return max(1, min(90, int(os.environ.get("PROMO_TRIAL_DAYS", "20"))))
+    except Exception:
+        return 20
+
+
+async def has_any_license_history(user_id: str) -> bool:
+    """True if the user has EVER had any license (active or expired, any source).
+    Used to gate the promo so returning users don't re-trigger it."""
+    if _licenses_col is None:
+        return False
+    return bool(await _licenses_col.find_one({"user_id": user_id}, {"_id": 1}))
+
+
+async def auto_grant_promo_trial(user_id: str) -> Optional[dict]:
+    """Idempotently grant the launch-promo trial the first time we see this user
+    (called from login / register / Google session exchange). Returns the newly
+    inserted license doc, or None if the promo is off / user already has any
+    license row."""
+    if not _promo_active():
+        return None
+    if _licenses_col is None:
+        return None
+    # Already has any license history? Skip. This makes the auto-grant a
+    # one-time event per user, regardless of active/expired state.
+    if await has_any_license_history(user_id):
+        return None
+
+    now = datetime.now(timezone.utc)
+    days = _promo_days()
+    doc = {
+        "id": f"lic_{uuid.uuid4().hex[:12]}",
+        "user_id": user_id,
+        "plan_id": "promo_trial",
+        "plan_label": f"Launch promo · {days}-day free trial",
+        "source": "promo",
+        "starts_at": now,
+        "expires_at": now + timedelta(days=days),
+        "amount_paise": 0,
+        "status": "active",
+        "created_at": now,
+        "note": "auto-granted on first login / register (launch promo)",
+    }
+    try:
+        await _licenses_col.insert_one(dict(doc))
+        logger.info(f"Auto-granted {days}-day promo trial to {user_id}")
+        return doc
+    except Exception as e:
+        logger.error(f"Promo grant failed for {user_id}: {e}")
+        return None
+
+
 # ---- Collections binding (injected from server.py) ------------------------
 _licenses_col = None
 _users_col = None
@@ -237,6 +295,10 @@ async def status(user: dict = Depends(auth.get_current_user)):
         "can_create_films": can_create_films,
         "is_admin": is_admin,
         "plans": plans_public(),
+        "promo": {
+            "active": _promo_active(),
+            "days": _promo_days(),
+        },
     }
 
 

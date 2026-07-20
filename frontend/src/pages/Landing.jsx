@@ -157,6 +157,14 @@ export default function Landing() {
               <Sparkles className="w-3.5 h-3.5 text-gold" />
               An original short film — from any story, any language
             </motion.div>
+            {!isAuthenticated && (
+              <motion.div variants={item} className="mb-6" data-testid="hero-promo-banner">
+                <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-200 text-xs font-medium">
+                  <Sparkles className="w-3 h-3" />
+                  Launch promo · Sign in and get <span className="text-fuchsia-100 font-semibold">20 days free</span> — no card, no OTP
+                </div>
+              </motion.div>
+            )}
             <motion.h1
               variants={item}
               className="font-display font-light tracking-tighter text-5xl sm:text-6xl lg:text-7xl leading-[1.05]"
@@ -172,8 +180,14 @@ export default function Landing() {
               scene-by-scene direction, voice narration and a downloadable film.
             </motion.p>
             <motion.div variants={item} className="mt-10 flex flex-wrap gap-4">
-              <Link to="/studio" className="btn-gold" data-testid="hero-start">
-                <Film className="w-4 h-4" /> Start creating
+              <Link
+                to={isAuthenticated ? "/studio" : "/login"}
+                state={!isAuthenticated ? { from: "/studio" } : undefined}
+                className="btn-gold"
+                data-testid="hero-start"
+              >
+                <Film className="w-4 h-4" />
+                {isAuthenticated ? "Start creating" : "Sign in — 20 days free"}
               </Link>
               <a href="#how" className="btn-ghost" data-testid="hero-learn">
                 See how it works

@@ -423,3 +423,26 @@ Then `sudo supervisorctl restart backend` — no code changes needed.
 - P3: Password reset flow.
 - P3: Voice-cast panel in Studio (per-character voice override with live preview).
 - P3: Refactor `Studio.jsx` (~1900 lines) into `/components`.
+
+## Update (2026-07-20 · Launch promo — 20 days free on first login)
+
+### What changed
+- New env-driven **launch promo**: `PROMO_TRIAL_ACTIVE=true` + `PROMO_TRIAL_DAYS=20`.
+- On the **very first login / register / Google sign-in**, every user is automatically granted a `plan_id=promo_trial, source=promo` license for 20 days — **no OTP verification required, no button click needed**.
+- Idempotent: `has_any_license_history()` guard means a user can't retrigger the promo by registering twice.
+- The paid plans (₹99/170/260/950) remain in place — they simply kick in after the promo ends.
+- The manual 7-day trial (which required email+phone OTP) is now hidden while the promo is active; it re-appears when `PROMO_TRIAL_ACTIVE=false`.
+
+### Frontend surfaces
+- **Landing hero** — new fuchsia promo banner ("Launch promo · Sign in and get 20 days free — no card, no OTP"). Hero CTA text becomes "Sign in — 20 days free" for guests.
+- **Pricing page** — shows a prominent fuchsia "Launch promotion — currently active · You have 20 days on the house · Ends [date]" card instead of the 7-day trial box while the promo is active.
+- **LicenseGate** — no longer appears for fresh signups since they already have an active license.
+- **LicenseBadge** — reads "20 days left" with the correct plan label ("Launch promo · 20-day free trial") on hover.
+
+### To flip off the promo (post-launch)
+Set `PROMO_TRIAL_ACTIVE=false` in `/app/backend/.env` and restart backend. The pipeline reverts to the standard 7-day trial with OTP verification.
+
+### Tests
+- 11/11 license tests passing.
+- Added `TestLaunchPromo` — verifies register auto-grants promo, no OTP required, no duplicate license on repeat login.
+

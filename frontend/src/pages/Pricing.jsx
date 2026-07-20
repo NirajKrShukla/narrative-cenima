@@ -32,7 +32,8 @@ export default function Pricing() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
-  const needsVerify = isAuthenticated && (!verifications.email_verified || !verifications.phone_verified);
+  const promoActive = license?.source === "promo";
+  const needsVerify = isAuthenticated && !promoActive && (!verifications.email_verified || !verifications.phone_verified);
 
   const handleStartTrial = async () => {
     if (!isAuthenticated) { nav("/login", { state: { from: "/pricing" } }); return; }
@@ -128,13 +129,19 @@ export default function Pricing() {
           One license. <span className="italic text-gold">Unlimited films.</span>
         </h1>
         <p className="text-white/60 mt-5 max-w-2xl mx-auto">
-          Verify your email + mobile once. Try 7 days free — no card required.
-          After that, pay-as-you-go: <span className="text-gold">no auto-renew</span>, no surprise charges.
+          Sign in once and get <span className="text-fuchsia-300">20 days on the house</span> — no card, no OTP.
+          When the launch promo ends, choose any plan below:
+          <span className="text-gold"> no auto-renew</span>, no surprise charges.
         </p>
 
         {activeLic && (
           <div className="mt-8 inline-flex items-center gap-3 px-4 py-2 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm" data-testid="pricing-active-badge">
             <ShieldCheck className="w-4 h-4" /> Active: {activeLic.plan_label} · {activeLic.days_remaining} days remaining
+          </div>
+        )}
+        {!activeLic && !isAuthenticated && (
+          <div className="mt-8 inline-flex items-center gap-3 px-4 py-2 rounded-full bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-200 text-sm" data-testid="pricing-launch-promo-banner">
+            <Sparkles className="w-4 h-4" /> Launch promo — first login unlocks 20 days free
           </div>
         )}
         {needsVerify && (
@@ -146,32 +153,55 @@ export default function Pricing() {
         )}
       </motion.div>
 
-      {/* Free trial banner */}
-      <div className="max-w-7xl mx-auto px-6 pb-6">
-        <div
-          className="glass rounded-lg p-6 sm:p-8 border border-gold/30 flex flex-col md:flex-row md:items-center gap-6 justify-between"
-          data-testid="pricing-trial-card"
-        >
-          <div>
-            <div className="overline mb-1 text-gold">Zero commitment</div>
-            <div className="font-display text-2xl">7-day free trial</div>
-            <p className="text-white/60 text-sm mt-2 max-w-xl">
-              Create unlimited films for a week. No card, no charge — just verify your identity once so
-              trial isn't abused.
-            </p>
-          </div>
-          <button
-            onClick={handleStartTrial}
-            disabled={busyPlan === "trial" || (isAuthenticated && trial_used)}
-            className="btn-gold whitespace-nowrap"
-            data-testid="pricing-start-trial-btn"
+      {/* Free trial banner — only shown when the launch promo is NOT active
+       * (i.e. after the promo ends we fall back to the manual 7-day flow). */}
+      {!promoActive && (
+        <div className="max-w-7xl mx-auto px-6 pb-6">
+          <div
+            className="glass rounded-lg p-6 sm:p-8 border border-gold/30 flex flex-col md:flex-row md:items-center gap-6 justify-between"
+            data-testid="pricing-trial-card"
           >
-            {busyPlan === "trial" && <Loader2 className="w-4 h-4 animate-spin" />}
-            {trial_used ? "Trial used" : "Start free trial"}
-            {!trial_used && <ArrowRight className="w-4 h-4" />}
-          </button>
+            <div>
+              <div className="overline mb-1 text-gold">Zero commitment</div>
+              <div className="font-display text-2xl">7-day free trial</div>
+              <p className="text-white/60 text-sm mt-2 max-w-xl">
+                Create unlimited films for a week. No card, no charge — just verify your identity once so
+                trial isn't abused.
+              </p>
+            </div>
+            <button
+              onClick={handleStartTrial}
+              disabled={busyPlan === "trial" || (isAuthenticated && trial_used)}
+              className="btn-gold whitespace-nowrap"
+              data-testid="pricing-start-trial-btn"
+            >
+              {busyPlan === "trial" && <Loader2 className="w-4 h-4 animate-spin" />}
+              {trial_used ? "Trial used" : "Start free trial"}
+              {!trial_used && <ArrowRight className="w-4 h-4" />}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
+
+      {promoActive && (
+        <div className="max-w-7xl mx-auto px-6 pb-6">
+          <div
+            className="glass rounded-lg p-6 sm:p-8 border border-fuchsia-500/40 flex flex-col md:flex-row md:items-center gap-6 justify-between"
+            data-testid="pricing-promo-active-card"
+          >
+            <div>
+              <div className="overline mb-1 text-fuchsia-300">Launch promotion — currently active</div>
+              <div className="font-display text-2xl">You have {activeLic?.days_remaining} days on the house.</div>
+              <p className="text-white/60 text-sm mt-2 max-w-xl">
+                No card, no OTP needed during the launch promo — just make films. When it ends, pick any plan below to continue.
+              </p>
+            </div>
+            <div className="text-fuchsia-300/70 text-sm whitespace-nowrap font-mono">
+              Ends {activeLic?.expires_at ? new Date(activeLic.expires_at).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "—"}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Paid plan grid */}
       <div className="max-w-7xl mx-auto px-6 pb-24">

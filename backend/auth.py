@@ -304,6 +304,12 @@ async def register(body: RegisterBody, response: Response):
             await _refs.record_pending(body.referred_by.strip(), uid)
         except Exception:
             pass
+    # Launch-promo: auto-grant a free trial on first login/signup
+    try:
+        import licenses as _lic
+        await _lic.auto_grant_promo_trial(uid)
+    except Exception:
+        pass
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     _set_auth_cookies(response, access, refresh)
@@ -321,6 +327,13 @@ async def login(body: LoginBody, response: Response):
     access = create_access_token(user["user_id"], email)
     refresh = create_refresh_token(user["user_id"])
     _set_auth_cookies(response, access, refresh)
+    # Launch-promo: auto-grant the free trial if this is truly the user's
+    # first login (no prior license history at all).
+    try:
+        import licenses as _lic
+        await _lic.auto_grant_promo_trial(user["user_id"])
+    except Exception:
+        pass
     return _user_public(user)
 
 
@@ -348,6 +361,12 @@ async def emergent_session_exchange(body: SessionExchangeBody, response: Respons
         upsert=True,
     )
     _set_session_cookie(response, session_token)
+    # Launch-promo: auto-grant the free trial on first Google sign-in too.
+    try:
+        import licenses as _lic
+        await _lic.auto_grant_promo_trial(user["user_id"])
+    except Exception:
+        pass
     return _user_public(user)
 
 
