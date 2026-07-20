@@ -355,10 +355,19 @@ const IngestPanel = ({ project, onDone }) => {
     await API.post(`/projects/${project.id}/ingest/voice`, form);
   });
 
+  const [targetLength, setTargetLength] = useState("auto");   // auto | short | medium | long | custom
+  const [customSeconds, setCustomSeconds] = useState(90);
+
   const runAnalyze = async () => {
     setAnalyzing(true);
     try {
-      await API.post(`/projects/${project.id}/analyze`);
+      const payload = {};
+      if (targetLength === "short") payload.target_seconds = 30;
+      else if (targetLength === "medium") payload.target_seconds = 90;
+      else if (targetLength === "long") payload.target_seconds = 180;
+      else if (targetLength === "custom") payload.target_seconds = Math.max(15, Math.min(600, Number(customSeconds) || 60));
+      // "auto" → no override, backend scales from word count
+      await API.post(`/projects/${project.id}/analyze`, payload);
       toast.success("Analysis started — this can take 1–3 minutes");
       // Poll project until status becomes 'analyzed' or 'error'
       let attempts = 0;
@@ -539,6 +548,68 @@ const IngestPanel = ({ project, onDone }) => {
                 {project.source_text.slice(0, 3000)}{project.source_text.length > 3000 ? "…" : ""}
               </div>
               <div className="mt-5">
+                {/* Film length selector — respects the source text, never pads */}
+                <div className="mb-4" data-testid="length-selector">
+                  <div className="text-xs text-white/50 mb-2 flex items-center justify-between">
+                    <span>Target film length</span>
+                    <span className="text-white/40">
+                      ~{Math.max(3, Math.min(15, Math.round((project.source_text?.split(/\s+/).length || 0) / 120)))} scenes if Auto
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2 text-xs">
+                    {[
+                      { key: "auto", label: "Auto", hint: "Scales with source" },
+                      { key: "short", label: "Short", hint: "~30 s · 3 scenes" },
+                      { key: "medium", label: "Medium", hint: "~90 s · 10 scenes" },
+                      { key: "long", label: "Long", hint: "~3 min · 20 scenes" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        onClick={() => setTargetLength(opt.key)}
+                        className={`px-2 py-2 rounded border transition text-left ${
+                          targetLength === opt.key
+                            ? "border-gold bg-gold/10 text-gold"
+                            : "border-white/10 hover:border-white/25 text-white/60"
+                        }`}
+                        data-testid={`length-${opt.key}`}
+                      >
+                        <div className="font-medium">{opt.label}</div>
+                        <div className="text-[10px] text-white/40 mt-0.5">{opt.hint}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTargetLength("custom")}
+                    className={`mt-2 w-full text-xs text-left px-2 py-2 rounded border transition ${
+                      targetLength === "custom"
+                        ? "border-gold bg-gold/10 text-gold"
+                        : "border-white/10 hover:border-white/25 text-white/60"
+                    }`}
+                    data-testid="length-custom-toggle"
+                  >
+                    Custom
+                    {targetLength === "custom" && (
+                      <span className="ml-2 inline-flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={15}
+                          max={600}
+                          value={customSeconds}
+                          onChange={(e) => setCustomSeconds(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-14 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-center"
+                          data-testid="length-custom-input"
+                        /> sec
+                      </span>
+                    )}
+                  </button>
+                  <p className="text-[10px] text-white/40 mt-2 leading-relaxed">
+                    We adapt only what's in your source — the film will never invent characters or events that aren't in your text.
+                  </p>
+                </div>
+
                 <button
                   className="btn-gold w-full justify-center"
                   onClick={runAnalyze}
@@ -548,8 +619,8 @@ const IngestPanel = ({ project, onDone }) => {
                   {analyzing ? <><Spinner /> Analyzing…</> : <><Zap className="w-4 h-4" /> Analyze story</>}
                 </button>
                 <p className="text-xs text-white/40 mt-3">
-                  Uses Claude Sonnet 4.6 to draft an original film blueprint —
-                  characters, scenes, camera language.
+                  Uses Claude Sonnet 4.6 to draft a faithful, original film blueprint —
+                  characters, scenes, camera language. No hallucination — every scene traces back to your text.
                 </p>
               </div>
             </>

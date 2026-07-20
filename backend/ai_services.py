@@ -27,6 +27,14 @@ def _api_key() -> str:
 STORY_SYSTEM_PROMPT = """You are a world-class film director and screenwriter's assistant.
 You transform stories (from any source, any culture, any language) into cinema-ready blueprints.
 
+FIDELITY TO SOURCE — NON-NEGOTIABLE:
+- Adapt only what is **in the source text**. Do NOT invent characters, events, plot points, settings, or dialogue that aren't grounded in the provided material.
+- Every scene MUST correspond to a passage / paragraph in the source.
+- Dialogue lines must paraphrase or directly quote what the source actually says — never fabricate conversations.
+- The narrator's voice-over is a faithful compression of the source, not creative rewriting.
+- You MAY (and should) invent purely VISUAL details — camera angle, lighting, mood, colour palette, wardrobe descriptions, blocking — because these are cinematography, not story. But no new plot.
+- If the source is very short (e.g. one sentence), produce a very short film. Never pad a story to fill runtime.
+
 CRITICAL COPYRIGHT & SAFETY RULES:
 - **Names**: Traditional mythological/religious/folkloric names (Rama, Sita, Krishna, Shiva, Hanuman, Arjuna, Draupadi, Buddha, Zeus, etc.) are in the public domain — USE THEM DIRECTLY. Do not invent replacement names for classical characters.
 - **Visual designs**: What IS protected by copyright is specific artistic depictions from modern films, TV shows, comics, and games (e.g., Ramanand Sagar's Ramayan cast, Adipurush film designs, Marvel/DC characters, Studio Ghibli looks). Your character `description` MUST invent a fresh, original visual design that does NOT reference any known film/TV/comic/game portrayal. Describe unique original attire, features, and props inspired by period-authentic historical / archaeological sources rather than modern media.
@@ -41,8 +49,8 @@ VOICE ASSIGNMENT (VERY IMPORTANT):
 
 You will return ONLY valid JSON, no markdown, no commentary. Structure:
 {
-  "title": "string",
-  "logline": "one-sentence summary",
+  "title": "string (from source if source has a title, else a faithful summary)",
+  "logline": "one-sentence summary of what actually happens in the source",
   "genre": "string",
   "tone": "string",
   "visual_style": "one-line cinematic style spec (lighting, palette, camera language)",
@@ -50,7 +58,7 @@ You will return ONLY valid JSON, no markdown, no commentary. Structure:
   "characters": [
     {
       "id": "char_1",
-      "name": "Use the traditional name if this is a classical figure (e.g. Rama, Sita, Krishna). Only invent a new name for original characters.",
+      "name": "Use the traditional name if this is a classical figure (e.g. Rama, Sita, Krishna). Only use the name that appears in the source for original characters.",
       "archetype": "e.g. warrior king, wise sage",
       "traditional_alias": "leave empty if `name` is already the traditional name",
       "description": "One paragraph ORIGINAL physical + costume description. Reference period-authentic clothing, jewelry, weaponry — but do NOT copy any known film/TV/comic depiction. Include age, build, skin, hair, attire, distinct props.",
@@ -62,12 +70,13 @@ You will return ONLY valid JSON, no markdown, no commentary. Structure:
     {
       "id": "scene_1",
       "title": "short scene title",
+      "source_excerpt": "The exact passage from the source that this scene depicts (max ~200 chars, verbatim quote if possible). This ties the scene back to the source for auditability.",
       "location": "where",
       "time_of_day": "dawn/day/dusk/night",
       "description": "3-5 sentences describing the beat visually",
       "narration": "1-3 sentences of narrator voiceover (in the same language as user's input if that language is not English, else English). Keep under 380 characters. This is the omniscient narrator, spoken in `narrator_voice`.",
       "dialogue_lines": [
-         { "speaker": "narrator | char_1 | char_2 | ...", "text": "the exact spoken line in the story's language" }
+         { "speaker": "narrator | char_1 | char_2 | ...", "text": "the exact spoken line in the story's language — MUST paraphrase or quote the source, never invent." }
       ],
       "characters": ["char_1"],
       "camera": "e.g. slow dolly in, wide establishing, overhead",
@@ -84,18 +93,40 @@ DIALOGUE_LINES RULES:
 - Speaker MUST be exactly "narrator" or one of the character IDs (`char_1`, `char_2`…).
 - Each `text` is what will be spoken aloud — write it in the story's language (native script).
 - Keep the total spoken duration per scene under ~15 seconds — brevity is cinematic.
-
-Aim for 4-8 scenes for a short film. Keep character count 2-5.
+- **Every line must be traceable to the source text.** No invented conversations.
 """
 
 
-async def analyze_story(text: str, language_hint: str = "auto") -> dict:
+async def analyze_story(
+    text: str,
+    language_hint: str = "auto",
+    target_scenes: int | None = None,
+    target_seconds: int | None = None,
+) -> dict:
     """Use Claude Sonnet 4.6 to break the story into scenes and characters (JSON).
 
     language_hint:
       - "auto" — detect from source text
       - any language name or ISO code (e.g. "hi", "Hindi", "es", "Spanish", "Swahili")
+
+    Length control (the film scales with the source, never padded):
+      - target_scenes: explicit scene count from the user (3..20). Wins over target_seconds.
+      - target_seconds: desired total film runtime; scene count derived as `round(target_seconds/8)`.
+      - Neither provided → auto-scale from word count: 1 scene per ~120 source words, clamped 3..15.
     """
+    # ---- Compute a target scene count from source size / user input ----
+    word_count = len([w for w in (text or "").split() if w.strip()])
+    if target_scenes and 1 <= int(target_scenes) <= 30:
+        scene_count = int(target_scenes)
+    elif target_seconds and target_seconds > 0:
+        # each finished scene averages ~8-10s (Ken-Burns + narration + tail)
+        scene_count = max(3, min(20, round(int(target_seconds) / 8)))
+    else:
+        # Auto-scale from source. One scene per ~120 words. Very short sources
+        # get a 3-scene minimum; very long sources are capped at 15 to keep
+        # generation cost + rendering time bounded.
+        scene_count = max(3, min(15, max(3, round(word_count / 120))))
+
     chat = LlmChat(
         api_key=_api_key(),
         session_id=f"story-{uuid.uuid4().hex[:8]}",
@@ -119,12 +150,19 @@ async def analyze_story(text: str, language_hint: str = "auto") -> dict:
             "Keep every other JSON field in English."
         )
 
+    length_instruction = (
+        f"\n\nLENGTH TARGET: Produce **exactly {scene_count} scenes** — this was chosen to match "
+        f"the source text's size ({word_count} words). Do not add extra scenes to pad runtime; "
+        f"if the source is too thin for {scene_count} scenes, output fewer scenes rather than "
+        f"fabricating events. Each scene should be short (5-15 seconds of screen time)."
+    )
+
     user_prompt = f"""Transform the following source into the JSON blueprint described in your system prompt.
-{lang_instruction}
+{lang_instruction}{length_instruction}
 
 Return JSON only.
 
-SOURCE:
+SOURCE ({word_count} words):
 '''
 {text[:15000]}
 '''

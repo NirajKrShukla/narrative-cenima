@@ -73,6 +73,8 @@ class TextIngest(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     language_hint: Optional[str] = None
+    target_scenes: Optional[int] = None      # user-picked exact scene count (3..20)
+    target_seconds: Optional[int] = None     # user-picked film runtime; derived → scenes
 
 
 class GenerateVideoRequest(BaseModel):
@@ -317,9 +319,19 @@ async def ingest_voice(pid: str, file: UploadFile = File(...), language: Optiona
     return {"ok": True, "chars": len(text), "transcript": text[:500]}
 
 
-async def _analyze_task(pid: str, source_text: str, language_hint: str):
+async def _analyze_task(
+    pid: str,
+    source_text: str,
+    language_hint: str,
+    target_scenes: Optional[int] = None,
+    target_seconds: Optional[int] = None,
+):
     try:
-        blueprint = await ai_services.analyze_story(source_text, language_hint or "auto")
+        blueprint = await ai_services.analyze_story(
+            source_text, language_hint or "auto",
+            target_scenes=target_scenes,
+            target_seconds=target_seconds,
+        )
     except Exception as e:
         logger.error(f"Analyze failed for {pid}: {e}")
         await projects_col.update_one(
@@ -377,7 +389,11 @@ async def analyze(pid: str, body: AnalyzeRequest = AnalyzeRequest()):
     await projects_col.update_one({"id": pid}, {"$set": {"status": "analyzing", "last_error": None}})
     # Priority: request body > project setting > auto
     lang = body.language_hint or doc.get("language_hint") or "auto"
-    asyncio.create_task(_analyze_task(pid, doc["source_text"], lang))
+    asyncio.create_task(_analyze_task(
+        pid, doc["source_text"], lang,
+        target_scenes=body.target_scenes,
+        target_seconds=body.target_seconds,
+    ))
     return {"ok": True, "status": "analyzing", "language_hint": lang}
 
 
