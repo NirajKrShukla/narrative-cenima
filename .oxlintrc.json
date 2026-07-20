@@ -1,4 +1,19 @@
 {
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "globals": {
+    "hasOwnProperty": "readonly",
+    "define": "readonly",
+    "load": "readonly",
+    "quit": "readonly",
+    "phantom": "readonly",
+    "readFile": "readonly",
+    "arguments": "readonly"
+  },
   "ignorePatterns": [
     "**/node_modules/**",
     "**/build/**",
@@ -6,7 +21,6 @@
     "**/coverage/**",
     "**/public/**",
     "**/*.min.js",
-    "**/*.umd.js",
-    "frontend/node_modules/**"
+    "**/*.umd.js"
   ]
 }

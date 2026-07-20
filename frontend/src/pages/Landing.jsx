@@ -99,8 +99,7 @@ export default function Landing() {
           <div className="hidden md:flex items-center gap-8 text-sm text-white/70">
             <a href="#demo" className="hover:text-white transition" data-testid="nav-demo">Watch demo</a>
             <a href="#how" className="hover:text-white transition" data-testid="nav-how">How it works</a>
-            <a href="#inputs" className="hover:text-white transition" data-testid="nav-inputs">Inputs</a>
-            <a href="#safety" className="hover:text-white transition" data-testid="nav-safety">Safety</a>
+            <Link to="/pricing" className="hover:text-white transition" data-testid="nav-pricing">Pricing</Link>
             <Link to="/gallery" className="hover:text-white transition" data-testid="nav-gallery">Gallery</Link>
           </div>
           <div className="flex items-center gap-3">

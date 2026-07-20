@@ -233,6 +233,9 @@ def _user_public(doc: dict) -> dict:
         "picture": doc.get("picture"),
         "role": doc.get("role") or "user",
         "auth_providers": doc.get("auth_providers") or [],
+        "email_verified": bool(doc.get("email_verified")),
+        "phone_verified": bool(doc.get("phone_verified")),
+        "phone": doc.get("phone"),
     }
 
 
@@ -248,6 +251,7 @@ async def _upsert_user_from_google(profile: dict) -> dict:
             "auth_providers": list(providers),
             "name": existing.get("name") or profile.get("name"),
             "picture": profile.get("picture") or existing.get("picture"),
+            "email_verified": True,   # Google verified the email for us
             "updated_at": now,
         }
         await _users_col.update_one({"email": email}, {"$set": updates})
@@ -261,6 +265,8 @@ async def _upsert_user_from_google(profile: dict) -> dict:
         "picture": profile.get("picture"),
         "role": "user",
         "auth_providers": ["google"],
+        "email_verified": True,   # Google verified the email for us
+        "phone_verified": False,
         "created_at": now,
         "updated_at": now,
     }

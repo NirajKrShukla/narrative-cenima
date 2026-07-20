@@ -470,8 +470,13 @@ class TestPaywall:
         assert r.status_code != 402
 
     def test_film_without_unlock_returns_402(self, paywall_projects):
-        r = requests.get(f"{BASE_URL}/api/projects/{paywall_projects['pidA']}/film?user_id=UZZ")
-        assert r.status_code == 402
+        """Historical: /film used to return 402 for un-unlocked films.
+        As of the 2026-07-20 license rewrite, per-film payment is removed —
+        signed-in owners can always download their own films (read-only access
+        is preserved even after their license expires). The 402 behaviour now
+        lives at the *write* endpoints and is covered by license-gate tests."""
+        r = requests.get(f"{BASE_URL}/api/projects/{paywall_projects['pidA']}/film")
+        assert r.status_code == 200, "Owner should always be able to download their own film"
 
 
 class TestStripeCheckoutFloor:

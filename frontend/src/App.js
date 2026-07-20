@@ -7,7 +7,10 @@ import Gallery from "./pages/Gallery";
 import GalleryItem from "./pages/GalleryItem";
 import Login from "./pages/Login";
 import AuthCallback from "./pages/AuthCallback";
+import Pricing from "./pages/Pricing";
+import VerifyIdentity from "./pages/VerifyIdentity";
 import ProtectedRoute from "./components/ProtectedRoute";
+import LicenseGate from "./components/LicenseGate";
 import { AuthProvider } from "./lib/auth";
 
 function App() {
@@ -17,14 +20,37 @@ function App() {
       <BrowserRouter>
         <AuthProvider>
           <Routes>
-            {/* Public — landing page & demos */}
+            {/* Public — landing page & demos, pricing (view-only) */}
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
+            <Route path="/pricing" element={<Pricing />} />
 
-            {/* Gated — Studio, Gallery, downloads, share */}
-            <Route path="/studio" element={<ProtectedRoute><Studio /></ProtectedRoute>} />
-            <Route path="/studio/:projectId" element={<ProtectedRoute><Studio /></ProtectedRoute>} />
+            {/* Auth required — verification page */}
+            <Route
+              path="/verify"
+              element={<ProtectedRoute><VerifyIdentity /></ProtectedRoute>}
+            />
+
+            {/* Auth + license required — Studio (creating films) */}
+            <Route
+              path="/studio"
+              element={
+                <ProtectedRoute>
+                  <LicenseGate><Studio /></LicenseGate>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/studio/:projectId"
+              element={
+                <ProtectedRoute>
+                  <LicenseGate><Studio /></LicenseGate>
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Auth only — gallery view (read-only access allowed after expiry) */}
             <Route path="/gallery" element={<ProtectedRoute><Gallery /></ProtectedRoute>} />
             <Route path="/gallery/:projectId" element={<ProtectedRoute><GalleryItem /></ProtectedRoute>} />
           </Routes>

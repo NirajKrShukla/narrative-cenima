@@ -43,13 +43,32 @@ def _autoauth_all_requests():
 
     # Reset admin's "free tier used" flag at the start of a test session so
     # /claim-free tests can run repeatedly against the same seeded admin user.
+    # Also ensure the admin has an ACTIVE 365-day license so tests that create
+    # projects can proceed (post-2026-07-20 license rollout).
     try:
         from pymongo import MongoClient
+        from datetime import datetime, timezone, timedelta
         _mc = MongoClient(os.environ["MONGO_URL"])
-        _mc[os.environ["DB_NAME"]]["projects"].update_many(
+        _db = _mc[os.environ["DB_NAME"]]
+        _db["projects"].update_many(
             {"owner_email": ADMIN_EMAIL.lower(), "free_granted": True},
             {"$set": {"free_granted": False}},
         )
+        admin = _db["users"].find_one({"email": ADMIN_EMAIL.lower()})
+        if admin:
+            _db["licenses"].update_many({"user_id": admin["user_id"]}, {"$set": {"status": "expired"}})
+            _db["licenses"].insert_one({
+                "id": "lic_test_admin_365",
+                "user_id": admin["user_id"],
+                "plan_id": "y1",
+                "plan_label": "1 year",
+                "source": "paid",
+                "starts_at": datetime.now(timezone.utc),
+                "expires_at": datetime.now(timezone.utc) + timedelta(days=365),
+                "amount_paise": 95000,
+                "status": "active",
+                "created_at": datetime.now(timezone.utc),
+            })
         _mc.close()
     except Exception:
         pass

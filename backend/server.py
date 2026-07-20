@@ -25,6 +25,8 @@ import ai_services
 import assembly
 import payments
 import auth
+import licenses as licenses_mod
+import otp as otp_mod
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/app/backend/storage"))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -41,9 +43,13 @@ projects_col = db["projects"]
 payments_col = db["payment_transactions"]
 users_col = db["users"]
 sessions_col = db["user_sessions"]
+licenses_col = db["licenses"]
+otp_col = db["otp_challenges"]
 
-# Bind DB collections to the auth module
+# Bind DB collections to the auth/licenses/otp modules
 auth.bind_collections(users_col, sessions_col)
+licenses_mod.bind_collections(licenses_col, users_col)
+otp_mod.bind_collections(otp_col, users_col)
 
 
 def now_iso() -> str:
@@ -1806,15 +1812,14 @@ async def stripe_webhook(request: __import__("fastapi").Request):
 
 @api.get("/projects/{pid}/film")
 async def download_film(pid: str):
-    """Gated download endpoint for the final film. Auth + ownership enforced by middleware."""
+    """Download the final film. Auth + ownership enforced by middleware.
+    License is NOT required for download (read-only access after expiry)."""
     doc = await projects_col.find_one({"id": pid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Project not found")
     final_film = doc.get("final_film")
     if not final_film:
         raise HTTPException(404, "No final film assembled yet")
-    if not (doc.get("paid") or doc.get("free_granted")):
-        raise HTTPException(402, "Film not unlocked — please unlock (free or paid)")
 
     path = STORAGE_DIR / final_film
     if not path.exists():
@@ -1825,12 +1830,11 @@ async def download_film(pid: str):
 
 @api.get("/projects/{pid}/share-info")
 async def share_info(pid: str, origin_url: str = ""):
-    """Return a shareable public URL + title for the film. Only if unlocked."""
+    """Return a shareable public URL + title for the film. License is checked
+    at write endpoints, so a signed-in owner can always share their own films."""
     doc = await projects_col.find_one({"id": pid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Project not found")
-    if not (doc.get("paid") or doc.get("free_granted")):
-        raise HTTPException(402, "Unlock the film before sharing")
     if not doc.get("final_film"):
         raise HTTPException(404, "No final film")
 
@@ -1845,16 +1849,42 @@ async def share_info(pid: str, origin_url: str = ""):
 
 app.include_router(api)
 app.include_router(auth.router)
+app.include_router(licenses_mod.router)
+app.include_router(otp_mod.router)
+
+
+# ---- Razorpay webhook (public — verified via signature) ------------------
+@app.post("/api/webhooks/razorpay")
+async def razorpay_webhook(request: Request):
+    return await licenses_mod.handle_razorpay_webhook(request)
 
 # Public API paths that don't require authentication
 _PUBLIC_API_EXACT = {"/api/health"}
 _PUBLIC_API_PREFIXES = (
     "/api/auth/",           # login, register, session exchange, refresh, me, logout
     "/api/storage/",        # demo videos, preview mp3s, scene images (final_film is guarded inside)
-    "/api/webhook/",        # Stripe webhook — verified via signature, not auth
+    "/api/webhook/",        # legacy Stripe webhook
+    "/api/webhooks/",       # new Razorpay webhook — signature-verified
     "/api/voice-preview",   # public TTS voice sample
+    "/api/licenses/plans",  # pricing is public (used on the marketing/pricing page)
 )
 _PROJECT_PATH_RE = re.compile(r"^/api/projects/([a-f0-9]{4,32})(?:/|$)")
+
+# Endpoints that BOTH require auth AND an active license.
+# GET reads (list, get, unlock-status, film download for own unlocked films) are
+# allowed with just auth so users can still access their existing content
+# read-only after their license expires. Everything below requires a live license.
+_LICENSE_GUARDED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_LICENSE_EXEMPT_POST_PATHS = {
+    # These are license-management endpoints themselves — must be reachable
+    # even when the user's license is inactive so they can activate it.
+    "/api/licenses/checkout",
+    "/api/licenses/checkout/verify",
+    "/api/licenses/checkout/sandbox-complete",
+    "/api/licenses/start-trial",
+    "/api/otp/send",
+    "/api/otp/verify",
+}
 
 
 @app.middleware("http")
@@ -1879,6 +1909,17 @@ async def _gate_api(request: Request, call_next):
                 owner = (doc.get("owner_email") or "").lower()
                 if not owner or owner != (user.get("email") or "").lower():
                     return JSONResponse({"detail": "You don't own this project"}, status_code=403)
+        # ---- License gate on MUTATION endpoints ----
+        # Any POST/PUT/PATCH/DELETE outside of the "license-management" allow-list
+        # requires an active license (trial or paid). Read-only GETs remain
+        # accessible after expiry so users retain view/download rights on their films.
+        if request.method in _LICENSE_GUARDED_METHODS and path not in _LICENSE_EXEMPT_POST_PATHS:
+            # Exempt small utility POSTs the license page itself needs
+            if user.get("role") != "admin":
+                try:
+                    await licenses_mod.require_active_license(user)
+                except HTTPException as le:
+                    return JSONResponse({"detail": le.detail, "license_required": True}, status_code=le.status_code)
         request.state.user = user
     return await call_next(request)
 
@@ -1898,8 +1939,10 @@ async def _startup():
     try:
         await auth.ensure_indexes(users_col, sessions_col)
         await auth.seed_admin(users_col)
+        await licenses_mod.ensure_indexes(licenses_col)
+        await otp_mod.ensure_indexes(otp_col)
     except Exception as e:
-        logger.error(f"Auth startup failed: {e}")
+        logger.error(f"Startup init failed: {e}")
 
 
 @app.on_event("shutdown")

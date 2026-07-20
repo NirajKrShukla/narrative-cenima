@@ -355,3 +355,71 @@ Written to `/app/memory/test_credentials.md`:
 - P3: Password reset ("forgot password") — the JWT playbook covers it but wasn't yet wired.
 - P3: Real Instagram/YouTube OAuth uploads (deferred — needs 4-8 week app verification).
 - P3: Refactor `Studio.jsx` (~1900 lines) into a `/components` folder.
+
+
+## Update (2026-07-20 · Payment system rewrite — Licenses + OTP + Razorpay)
+
+### Business model change (breaking rewrite)
+The old paywall (1 free ≤20 MB unlock + per-film ₹99 Stripe checkout) is
+**fully replaced** by a time-based subscription license model:
+
+- **7-day free trial** — one per verified user (requires both email + phone OTP verification first)
+- **₹99 / 30 days**, **₹170 / 60 days**, **₹260 / 90 days**, **₹950 / 365 days**
+- Max validity cap: **365 days** from `now` (renewing early extends from current expiry, never truncated)
+- License **active** → unlimited film creation / download / share
+- License **expired** → read-only: existing films still downloadable, but no new films (`402` on write endpoints)
+
+### New backend modules
+- `/app/backend/licenses.py` — Plan config, license insertion/query, Razorpay order+verify+webhook. Guarded by `SANDBOX_MODE` env var so the flow runs end-to-end without live Razorpay keys.
+- `/app/backend/otp.py` — Email OTP (Resend) + Phone OTP (Twilio Verify). In sandbox mode the OTP is returned inline as `sandbox_code`; in production it's sent via provider APIs.
+- Extended `/app/backend/auth.py` — `_user_public` now surfaces `email_verified`, `phone_verified`, `phone`. Google-authed users are marked email-verified automatically.
+
+### Middleware layer (one central gate)
+- Public paths + `/api/licenses/plans` + `/api/webhooks/razorpay` are bypass-listed.
+- Every non-public `/api/*` requires auth (cookie or Bearer).
+- All `/api/projects/{pid}/…` require ownership (admins bypass).
+- All **mutation** endpoints (POST/PUT/PATCH/DELETE outside license-management allow-list) require an **active license** — 402 with `license_required: true` if not.
+
+### Data model additions
+- `licenses`: `{id, user_id, plan_id, plan_label, source, starts_at, expires_at, amount_paise, payment_id?, status, created_at}` — partialFilterExpression unique index on `payment_id` (string values only, avoids the null-uniqueness caveat).
+- `otp_challenges`: `{id, channel, identifier, code, verified, attempts, created_at (TTL 24h), expires_at}`
+- `users` gained `email_verified`, `email_verified_at`, `phone`, `phone_verified`, `phone_verified_at`.
+
+### Sandbox mode
+`SANDBOX_MODE=true` (currently active in preview):
+- `/otp/send` returns the 6-digit code in the response so the UI can auto-fill it.
+- `/licenses/checkout` returns a fake order + `/licenses/checkout/sandbox-complete` grants the license instantly with no real charge.
+- All flows work end-to-end without any external API keys.
+
+### Frontend
+- **`/pricing`** — public marketing page with hero, 7-day trial CTA, 4 plan cards (POPULAR badge on ₹99), per-day math, feature checklist, and INR-only Razorpay footer.
+- **`/verify`** — Two-step OTP verification (email + phone). Shows sandbox codes inline for testing. Auto-navigates to `/pricing` when both channels verified.
+- **`LicenseGate`** component wraps `/studio` — shows verify prompt if unverified, "Start trial" if unused, or "See plans" for expired/paid users. Existing films remain accessible via read-only routes.
+- **`useLicense` hook** — single source of truth for plans + status + actions (start trial, checkout, sandbox complete, verify payment, send/verify OTP).
+- Razorpay checkout script loaded lazily from CDN when a paid plan is clicked.
+
+### Testing (all sandbox-mode)
+- **`test_licenses.py`** — 9 new tests covering plans endpoint, full signup→verify→trial→create-project flow, trial one-time enforcement, sandbox payment extension math, 402 on expired write, 200 on expired read, and OTP rate-limit (3/hour).
+- Conftest updated: admin gets a 365-day active license at session start so pre-existing tests (which create projects) don't hit the license gate.
+- **Total: 61 / 61 backend tests passing.**
+
+### Verified
+- E2E preview screenshot: register → studio (gated) → verify email/phone via sandbox OTP → pricing → start trial → studio empty state with "Your 7-day trial is active!" toast.
+- Expiry test: setting `expires_at` to yesterday returns 402 on `POST /api/projects` but still 200 on `GET /api/projects` and `GET /api/projects/{pid}/film` (read-only preserved).
+- Razorpay signature verification path stubbed for sandbox but fully implemented for live keys.
+
+### To flip from sandbox → live
+Set these 8 env vars in `/app/backend/.env` and `SANDBOX_MODE=false`:
+`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID`,
+`RESEND_API_KEY`, `SENDER_EMAIL`,
+`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`.
+Then `sudo supervisorctl restart backend` — no code changes needed.
+
+## Backlog / Next (post-2026-07-20)
+- **P1: Provide 8 live credentials** to flip from sandbox to production (see `test_credentials.md` for the full list).
+- **P1: Redeploy** — code is production-ready; just needs the deployment retry after the previous MongoDB provisioning fix.
+- P2: KYC-style user records dashboard — `users` now stores phone/email/verifications; wire a simple admin `/admin/users` page.
+- P2: License status badge in nav ("7d left · Renew") for gentle upsell.
+- P3: Password reset flow.
+- P3: Voice-cast panel in Studio (per-character voice override with live preview).
+- P3: Refactor `Studio.jsx` (~1900 lines) into `/components`.
