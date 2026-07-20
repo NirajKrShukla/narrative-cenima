@@ -216,22 +216,26 @@ async def status(user: dict = Depends(auth.get_current_user)):
     """Full license status for the signed-in user."""
     lic = await current_license(user["user_id"])
     trial_used = await has_used_trial(user["user_id"])
+    is_admin = user.get("role") == "admin"
     verifications = {
-        "email_verified": bool(user.get("email_verified")),
-        "phone_verified": bool(user.get("phone_verified")),
+        "email_verified": bool(user.get("email_verified")) or is_admin,
+        "phone_verified": bool(user.get("phone_verified")) or is_admin,
     }
     can_start_trial = (
         not trial_used
+        and not is_admin
         and verifications["email_verified"]
         and verifications["phone_verified"]
     )
-    can_create_films = await has_active_license(user["user_id"])
+    # Admins can always create films regardless of license state
+    can_create_films = is_admin or await has_active_license(user["user_id"])
     return {
         "license": _lic_public(lic),
         "trial_used": trial_used,
         "can_start_trial": can_start_trial,
         "verifications": verifications,
         "can_create_films": can_create_films,
+        "is_admin": is_admin,
         "plans": plans_public(),
     }
 

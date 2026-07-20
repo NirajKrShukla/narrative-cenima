@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Film, Sparkles, FileText, Mic, Link2, PlayCircle, ShieldCheck, Wand2, Play, LogIn, LogOut, UserCircle2 } from "lucide-react";
 import { useAuth } from "../lib/auth";
+import LicenseBadge from "../components/LicenseBadge";
 
 const HERO_BG =
   "https://images.pexels.com/photos/18415806/pexels-photo-18415806.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940";
@@ -105,6 +106,7 @@ export default function Landing() {
           <div className="flex items-center gap-3">
             {isAuthenticated ? (
               <>
+                <LicenseBadge compact />
                 <div className="hidden sm:flex items-center gap-2 text-sm text-white/70" data-testid="nav-user-badge">
                   {user?.picture ? (
                     <img src={user.picture} alt="" className="w-6 h-6 rounded-full border border-white/20" />

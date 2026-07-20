@@ -10,6 +10,7 @@ import {
   Settings, Globe, Heart, Rocket, AlertCircle, Languages, Type, Subtitles, X,
 } from "lucide-react";
 import { API, assetUrl } from "../lib/api";
+import LicenseBadge from "../components/LicenseBadge";
 
 // --------- Anonymous user id (localStorage) ----------
 const getUserId = () => {
@@ -119,6 +120,7 @@ export default function Studio() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <LicenseBadge compact />
             <Link to="/gallery" className="text-sm text-white/70 hover:text-white transition flex items-center gap-1.5" data-testid="nav-gallery">
               <Globe className="w-4 h-4 text-gold" /> Gallery
             </Link>
