@@ -11,10 +11,16 @@ export default function Login() {
   const location = useLocation();
   const from = location.state?.from || "/studio";
 
-  const [mode, setMode] = useState("login"); // "login" | "register"
+  // If we arrived via a referral link (?ref=XXXXXXXX), start in register mode
+  // with the code pre-filled.
+  const searchParams = new URLSearchParams(location.search);
+  const refFromUrl = searchParams.get("ref") || "";
+
+  const [mode, setMode] = useState(refFromUrl ? "register" : "login"); // "login" | "register"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [referredBy, setReferredBy] = useState(refFromUrl.toUpperCase());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -28,8 +34,8 @@ export default function Login() {
         await login({ email, password });
         toast.success("Welcome back!");
       } else {
-        await register({ email, password, name });
-        toast.success("Account created — you're in!");
+        await register({ email, password, name, referred_by: referredBy || undefined });
+        toast.success(referredBy ? `Account created — verify identity to unlock your +7 days!` : "Account created — you're in!");
       }
       navigate(from, { replace: true });
     } catch (err) {
@@ -115,6 +121,20 @@ export default function Login() {
                 />
               </div>
             )}
+            {mode === "register" && (
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-fuchsia-400 text-xs font-mono">REF</span>
+                <input
+                  type="text"
+                  placeholder="Referral code (optional — earns you +7 days)"
+                  value={referredBy}
+                  onChange={(e) => setReferredBy(e.target.value.toUpperCase())}
+                  maxLength={8}
+                  className="w-full pl-14 pr-4 py-3 rounded-md bg-black/40 border border-white/10 focus:border-fuchsia-400 outline-none text-sm font-mono tracking-widest"
+                  data-testid="login-referral-input"
+                />
+              </div>
+            )}
             <div className="relative">
               <Mail className="w-4 h-4 text-white/40 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
@@ -163,6 +183,11 @@ export default function Login() {
           <div className="mt-6 text-center text-sm text-white/60">
             {mode === "login" ? (
               <>
+                <div className="mb-2">
+                  <Link to="/forgot-password" className="text-white/60 hover:text-gold text-xs" data-testid="login-forgot-link">
+                    Forgot your password?
+                  </Link>
+                </div>
                 New here?{" "}
                 <button
                   type="button"

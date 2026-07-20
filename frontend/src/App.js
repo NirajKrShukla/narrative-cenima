@@ -9,6 +9,8 @@ import Login from "./pages/Login";
 import AuthCallback from "./pages/AuthCallback";
 import Pricing from "./pages/Pricing";
 import VerifyIdentity from "./pages/VerifyIdentity";
+import ForgotPassword from "./pages/ForgotPassword";
+import Admin from "./pages/Admin";
 import ProtectedRoute from "./components/ProtectedRoute";
 import LicenseGate from "./components/LicenseGate";
 import { AuthProvider } from "./lib/auth";
@@ -25,6 +27,10 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
             <Route path="/pricing" element={<Pricing />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+
+            {/* Admin-only route (server-side role check is authoritative) */}
+            <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
 
             {/* Auth required — verification page */}
             <Route

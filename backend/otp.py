@@ -272,6 +272,14 @@ async def verify_otp(
         updates["phone"] = identifier
     await _users_col.update_one({"user_id": user["user_id"]}, {"$set": updates})
 
+    # If this is the user's FIRST verification (either channel), try to award
+    # a pending referral bonus to both parties.
+    try:
+        import referrals as _refs
+        await _refs.maybe_award(user["user_id"])
+    except Exception:
+        pass
+
     return {"ok": True, "channel": body.channel, "verified": True}
 
 

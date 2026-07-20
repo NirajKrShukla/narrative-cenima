@@ -108,6 +108,7 @@ class RegisterBody(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6, max_length=200)
     name: Optional[str] = None
+    referred_by: Optional[str] = None
 
 
 class LoginBody(BaseModel):
@@ -296,6 +297,13 @@ async def register(body: RegisterBody, response: Response):
         "updated_at": now,
     }
     await _users_col.insert_one(dict(doc))
+    # Record pending referral if the user provided a code
+    if body.referred_by:
+        try:
+            import referrals as _refs
+            await _refs.record_pending(body.referred_by.strip(), uid)
+        except Exception:
+            pass
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     _set_auth_cookies(response, access, refresh)

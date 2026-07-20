@@ -27,6 +27,8 @@ import payments
 import auth
 import licenses as licenses_mod
 import otp as otp_mod
+import referrals as referrals_mod
+import admin_routes as admin_mod
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/app/backend/storage"))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,11 +47,14 @@ users_col = db["users"]
 sessions_col = db["user_sessions"]
 licenses_col = db["licenses"]
 otp_col = db["otp_challenges"]
+referrals_col = db["referrals"]
 
 # Bind DB collections to the auth/licenses/otp modules
 auth.bind_collections(users_col, sessions_col)
 licenses_mod.bind_collections(licenses_col, users_col)
 otp_mod.bind_collections(otp_col, users_col)
+referrals_mod.bind_collections(users_col, licenses_col, referrals_col)
+admin_mod.bind_collections(users_col, licenses_col, projects_col, referrals_col, otp_col)
 
 
 def now_iso() -> str:
@@ -1867,6 +1872,9 @@ app.include_router(api)
 app.include_router(auth.router)
 app.include_router(licenses_mod.router)
 app.include_router(otp_mod.router)
+app.include_router(referrals_mod.router)
+app.include_router(admin_mod.admin_router)
+app.include_router(admin_mod.password_reset_router)
 
 
 # ---- Razorpay webhook (public — verified via signature) ------------------
@@ -1883,6 +1891,7 @@ _PUBLIC_API_PREFIXES = (
     "/api/webhooks/",       # new Razorpay webhook — signature-verified
     "/api/voice-preview",   # public TTS voice sample
     "/api/licenses/plans",  # pricing is public (used on the marketing/pricing page)
+    "/api/referrals/validate",  # register-form referral-code preview (public)
 )
 _PROJECT_PATH_RE = re.compile(r"^/api/projects/([a-f0-9]{4,32})(?:/|$)")
 
@@ -1957,6 +1966,7 @@ async def _startup():
         await auth.seed_admin(users_col)
         await licenses_mod.ensure_indexes(licenses_col)
         await otp_mod.ensure_indexes(otp_col)
+        await referrals_mod.ensure_indexes(users_col, referrals_col)
     except Exception as e:
         logger.error(f"Startup init failed: {e}")
 
